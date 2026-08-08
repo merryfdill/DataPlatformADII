@@ -1,0 +1,31 @@
+# Environment
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local data
+data/*
+!data/.gitkeep
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Spark
+spark-warehouse/
+metastore_db/
+
+# dbt
+dbt_packages/
+target/
+logs/
+
+# Airflow
+airflow/logs/
+
+# OS
+.DS_Store
+Thumbs.db
