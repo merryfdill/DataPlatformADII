@@ -1,0 +1,8 @@
+{
+  "title": "ADII Overview",
+  "uid": "adii-overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [],
+  "time": { "from": "now-24h", "to": "now" }
+}

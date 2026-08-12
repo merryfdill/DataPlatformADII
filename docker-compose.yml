@@ -1,0 +1,207 @@
+x-airflow-common: &airflow-common
+  build:
+    context: ./airflow
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW_WEBSERVER_SECRET_KEY}
+    AIRFLOW_UID: ${AIRFLOW_UID}
+    _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME}
+    _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD}
+    MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+    MINIO_BUCKET: ${MINIO_BUCKET}
+    AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+    AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+    AWS_REGION: ${AWS_REGION}
+    TRINO_HOST: ${TRINO_HOST}
+    TRINO_PORT: ${TRINO_PORT}
+    ICEBERG_REST_URI: ${ICEBERG_REST_URI}
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags
+    - airflow-logs:/opt/airflow/logs
+  networks:
+    - adii-network
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - adii-network
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - adii-network
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/init-buckets.sh"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+    volumes:
+      - ./infrastructure/minio/init-buckets.sh:/init-buckets.sh:ro
+    networks:
+      - adii-network
+
+  iceberg-rest:
+    image: tabulario/iceberg-rest:latest
+    environment:
+      CATALOG_WAREHOUSE: s3://${MINIO_BUCKET}/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: ${MINIO_ENDPOINT}
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION}
+    ports:
+      - "8181:8181"
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    networks:
+      - adii-network
+
+  trino:
+    image: trinodb/trino:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./infrastructure/trino/catalog:/etc/trino/catalog:ro
+    depends_on:
+      - iceberg-rest
+    networks:
+      - adii-network
+
+  spark-iceberg:
+    build:
+      context: ./spark
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION}
+    ports:
+      - "8888:8888"
+      - "8083:8080"
+      - "7077:7077"
+      - "18080:18080"
+    volumes:
+      - ./notebooks:/home/iceberg/notebooks/adii
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+      iceberg-rest:
+        condition: service_started
+    networks:
+      - adii-network
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: ["/bin/bash", "/opt/airflow/scripts/entrypoint.sh"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      - "8082:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  dbt:
+    build:
+      context: ./dbt
+    entrypoint: ["tail", "-f", "/dev/null"]
+    environment:
+      TRINO_HOST: ${TRINO_HOST}
+      TRINO_PORT: ${TRINO_PORT}
+    volumes:
+      - ./dbt:/usr/app/dbt
+    working_dir: /usr/app/dbt
+    depends_on:
+      - trino
+    networks:
+      - adii-network
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_INSTALL_PLUGINS: trino-datasource
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - trino
+    networks:
+      - adii-network
+
+networks:
+  adii-network:
+    driver: bridge
+
+volumes:
+  minio-data:
+  postgres-data:
+  airflow-logs:
+  grafana-data:

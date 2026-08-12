@@ -1,0 +1,11 @@
+adii_platform:
+  target: dev
+  outputs:
+    dev:
+      type: trino
+      host: "{{ env_var('TRINO_HOST', 'trino') }}"
+      port: "{{ env_var('TRINO_PORT', '8080') | as_number }}"
+      user: dbt
+      catalog: iceberg
+      schema: gold
+      threads: 2

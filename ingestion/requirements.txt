@@ -1,0 +1,8 @@
+Faker==40.35.0
+requests==2.31.0
+beautifulsoup4==4.13.4
+lxml==4.9.4
+pandas==2.0.2
+pyarrow==19.0.1
+boto3==1.43.67
+python-dotenv==1.0.0
