@@ -1,3 +1,24 @@
-# No additional Python dependencies required yet.
-# DAGs currently contain no logic that needs extra providers.
-# Add packages here as pipeline code is implemented.
+# docker, boto3, pandas, apache-airflow-providers-{docker,slack,smtp} are
+# already bundled in the apache/airflow:3.3.0 base image (verified via
+# `airflow providers list` / `python -c "import X"` before adding this file -
+# only the Trino client was actually missing).
+trino
+
+# Pinned to EXACTLY match ingestion/requirements.txt and
+# models/ngp_classifier_metadata.json ("sklearn_version": "1.4.0") - the
+# base image ships a newer scikit-learn (1.9.0) that cannot unpickle this
+# joblib model (AttributeError: 'SimpleImputer' object has no attribute
+# '_fill_dtype' - confirmed by running classification_ngp for real). This
+# never touches or retrains the model itself, only makes the Airflow
+# container's environment compatible with it.
+scikit-learn==1.4.0
+joblib==1.3.2
+
+# Needed by ingestion/badr/generate_badr.py, called for the first time from
+# this container by the new generate_badr_daily task (Etape 1/3 daily-
+# simulation phase) - never needed before since the DAG never called this
+# script (BADR was frozen). Pinned to EXACTLY match ingestion/requirements.txt
+# so the SAME code produces the SAME synthetic data regardless of which
+# container runs it (host or Airflow) - determinism (seed derived from
+# run_date) depends on Faker's own internal RNG behavior staying identical.
+Faker==40.35.0

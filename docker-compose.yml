@@ -4,13 +4,48 @@ x-airflow-common: &airflow-common
   environment: &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+    # Airflow 3 scrubs AIRFLOW__DATABASE__SQL_ALCHEMY_CONN to
+    # "airflow-db-not-allowed:///" inside task subprocesses (tasks must not touch
+    # the metadata DB directly). utils/metrics.py writes the reporting.* tables
+    # in that same Postgres, so it needs these raw credentials to build its own
+    # explicit connection. Without them: "ProgrammingError: invalid dsn" and
+    # zero metrics recorded (the 07:00 Slack report has nothing to read).
+    POSTGRES_USER: ${POSTGRES_USER}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    POSTGRES_DB: ${POSTGRES_DB}
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
     AIRFLOW__API__SECRET_KEY: ${AIRFLOW_WEBSERVER_SECRET_KEY}
+    # The scheduler signs a task-identity JWT that the api-server must validate.
+    # [api_auth] jwt_secret is unset by default -> get_signing_key() generates a
+    # RANDOM key per process (airflow/api_fastapi/auth/tokens.py:558), so the
+    # scheduler and the api-server end up with different keys and every task dies
+    # with "ServerResponseError: Invalid auth token". Must be one shared value
+    # across all airflow containers. Same latent-since-the-split caveat as below.
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET}
+    # Airflow 3 LocalExecutor: the scheduler forks task workers whose supervisor
+    # must call back to the Execution API to register each task start. That URL
+    # defaults to {api.base_url}/execution/ and, with api.base_url unset, to the
+    # hardcoded http://localhost:8080/execution/ (airflow/executors/base_executor.py).
+    # Since the api-server runs in its OWN container (airflow-webserver), nothing
+    # listens on :8080 inside the scheduler -> every task dies with
+    # httpx.ConnectError [Errno 111] Connection refused right after "Pre Execute",
+    # no traceback in the task log (the supervisor SIGKILLs the child before it
+    # runs a line). Latent since the webserver/scheduler split (2026-08-13);
+    # reappears on any container recreation if this var is missing.
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-webserver:8080/execution/
+    # Browser-facing base URL for links the UI generates. Host port published by
+    # the airflow-webserver service below is 8082 (8080 is Trino, 8083 is Spark).
+    AIRFLOW__API__BASE_URL: http://localhost:8082
     AIRFLOW_UID: ${AIRFLOW_UID}
     _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME}
     _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD}
     MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+    # ingestion/config.py's get_s3_client() only reads MINIO_ENDPOINT_HOST
+    # (default http://localhost:9000, meant for host-run scripts). Tasks run
+    # inside this container, so it must be overridden to the docker-network
+    # address - same value as MINIO_ENDPOINT, not a new one.
+    MINIO_ENDPOINT_HOST: ${MINIO_ENDPOINT}
     MINIO_BUCKET: ${MINIO_BUCKET}
     AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
     AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
@@ -21,6 +56,9 @@ x-airflow-common: &airflow-common
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - airflow-logs:/opt/airflow/logs
+    - ./data:/opt/airflow/data
+    - ./ingestion:/opt/airflow/ingestion
+    - ./models:/opt/airflow/models
   networks:
     - adii-network
 
@@ -76,6 +114,19 @@ services:
     networks:
       - adii-network
 
+  # A fresh named volume is created root-owned by default; tabulario/iceberg-rest
+  # runs as uid 1000 (user "iceberg") and cannot write into a root-owned mount
+  # point (confirmed: SQLITE_CANTOPEN on first boot). Same fix-before-use pattern
+  # as minio-init above - a tiny init container chowns the volume once, then
+  # iceberg-rest waits on it via condition: service_completed_successfully.
+  iceberg-rest-init:
+    image: alpine:latest
+    entrypoint: ["chown", "-R", "1000:1000", "/data"]
+    volumes:
+      - iceberg-rest-catalog:/data
+    networks:
+      - adii-network
+
   iceberg-rest:
     image: tabulario/iceberg-rest:latest
     environment:
@@ -86,10 +137,27 @@ services:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       AWS_REGION: ${AWS_REGION}
+      # Overrides the image's own default (jdbc:sqlite:file:/tmp/iceberg_rest_mode=memory,
+      # a real on-disk file despite the misleading name - no "?" before "mode=memory"
+      # means it's not an actual SQLite in-memory flag) with an explicit path under
+      # the persisted volume below, so the catalog survives container recreation.
+      # busy_timeout=30000 (ms): SQLite only allows one writer at a time: without
+      # this, two near-simultaneous commits (e.g. register_gold_iceberg.py +
+      # dbt's own view/table commits, or the REST server's own internal thread
+      # pool overlapping two requests) hit SQLITE_BUSY immediately and fail -
+      # confirmed via iceberg-rest's own logs (org.sqlite.SQLiteException:
+      # [SQLITE_BUSY] The database file is locked), reproduced 4/4 times with
+      # no other process holding the lock. This makes SQLite retry internally
+      # for up to 30s before giving up, instead of failing on first contention.
+      CATALOG_URI: jdbc:sqlite:file:/opt/iceberg-catalog/catalog.db?busy_timeout=30000
+    volumes:
+      - iceberg-rest-catalog:/opt/iceberg-catalog
     ports:
       - "8181:8181"
     depends_on:
       minio-init:
+        condition: service_completed_successfully
+      iceberg-rest-init:
         condition: service_completed_successfully
     networks:
       - adii-network
@@ -119,6 +187,15 @@ services:
       - "18080:18080"
     volumes:
       - ./notebooks:/home/iceberg/notebooks/adii
+      # Dockerfile's `COPY jobs /home/iceberg/jobs` only bakes jobs in at
+      # image BUILD time (last built 2026-08-08) - `docker-compose up -d`
+      # never rebuilds automatically, so a plain recreation was silently
+      # serving 2026-08-08's stale/empty placeholder job files instead of
+      # the real ones (confirmed: register_gold_iceberg.py missing entirely
+      # after a down/up cycle). A live bind mount, same pattern as dbt's
+      # own `./dbt:/usr/app/dbt`, makes this container always reflect the
+      # current repo state with no rebuild dependency.
+      - ./spark/jobs:/home/iceberg/jobs
     depends_on:
       minio-init:
         condition: service_completed_successfully
@@ -149,6 +226,18 @@ services:
   airflow-scheduler:
     <<: *airflow-common
     command: scheduler
+    # <<: merges the mapping but does not append to the anchor's `volumes`
+    # list - it must be repeated in full here, plus the docker socket
+    # (LocalExecutor runs tasks as subprocesses of this container, so only
+    # this service - not webserver/dag-processor - needs it to exec into
+    # spark-iceberg/dbt).
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - airflow-logs:/opt/airflow/logs
+      - ./data:/opt/airflow/data
+      - ./ingestion:/opt/airflow/ingestion
+      - ./models:/opt/airflow/models
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       postgres:
         condition: service_healthy
@@ -196,6 +285,21 @@ services:
     networks:
       - adii-network
 
+  chatbot:
+    build:
+      context: ./chatbot
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.6-flash}
+      TRINO_HOST: ${TRINO_HOST}
+      TRINO_PORT: ${TRINO_PORT}
+    ports:
+      - "8501:8000"
+    depends_on:
+      - trino
+    networks:
+      - adii-network
+
 networks:
   adii-network:
     driver: bridge
@@ -205,3 +309,4 @@ volumes:
   postgres-data:
   airflow-logs:
   grafana-data:
+  iceberg-rest-catalog:

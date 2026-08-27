@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Assistant Douane IA</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div class="app">
+
+  <!-- ===================== SIDEBAR ===================== -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-icon">
+        <img src="Douanes_Marocaines_ADII_Charaf_2015.jpg" alt="ADII" />
+      </div>
+      <div class="brand-text">
+        <div class="brand-title">ADII</div>
+        <div class="brand-subtitle">Assistant Douane</div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <button class="nav-item active" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 4h16v12H7l-3 3V4z" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Conversations</span>
+      </button>
+      <a class="nav-item" href="http://localhost:3000" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19V10M10 19V5M16 19v-7M22 19H2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Tableau de bord</span>
+      </a>
+      <button class="nav-item" type="button" title="Bientot disponible">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="6" rx="7" ry="2.6"/><path d="M5 6v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6V6M5 12v6c0 1.4 3.1 2.6 7 2.6s7-1.2 7-2.6v-6"/></svg>
+        <span>Donnees Gold</span>
+        <span class="nav-badge">Bientot</span>
+      </button>
+      <button class="nav-item" type="button" title="Bientot disponible">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 13a7.6 7.6 0 000-2l2-1.5-2-3.5-2.4.6a7.7 7.7 0 00-1.7-1L15 3h-6l-.3 2.6a7.7 7.7 0 00-1.7 1L4.6 6l-2 3.5L4.6 11a7.6 7.6 0 000 2l-2 1.5 2 3.5 2.4-.6c.5.4 1.1.8 1.7 1L9 21h6l.3-2.6c.6-.2 1.2-.6 1.7-1l2.4.6 2-3.5-2-1.5z" stroke-linejoin="round"/></svg>
+        <span>Parametres</span>
+        <span class="nav-badge">Bientot</span>
+      </button>
+      <button class="nav-item" id="helpBtn" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 015 .3c0 1.7-2.5 1.9-2.5 3.7" stroke-linecap="round"/><circle cx="12" cy="17" r="0.6" fill="currentColor" stroke="none"/></svg>
+        <span>Aide</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="row-item"><span class="status-dot"></span><span class="value">Environnement prototype</span></div>
+      <div>
+        <div class="label">Source des donnees</div>
+        <div class="value">Iceberg Gold (Trino)</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ===================== MAIN ===================== -->
+  <div class="main">
+
+    <header class="header">
+      <div class="header-title">
+        <h1>Assistant Douane IA</h1>
+        <p>Interrogez et analysez vos donnees d'arbitrage douanier</p>
+      </div>
+      <div class="header-actions">
+        <button class="icon-btn" id="notifBtn" type="button" title="Notifications">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 8a6 6 0 1112 0c0 4 1.5 5.5 1.5 5.5H4.5S6 12 6 8z" stroke-linejoin="round"/><path d="M9.5 17.5a2.5 2.5 0 005 0" stroke-linecap="round"/></svg>
+        </button>
+        <div class="profile">
+          <div class="avatar">AD</div>
+          <div class="profile-text">
+            <div class="profile-name">Analyste</div>
+            <div class="profile-role">Douane / Arbitrage</div>
+          </div>
+        </div>
+        <button class="btn-primary" id="newConvBtn" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>
+          Nouvelle conversation
+        </button>
+      </div>
+    </header>
+
+    <div class="conversation-wrap" id="conversationWrap">
+      <div class="conversation-inner">
+
+        <div class="welcome">
+          <div class="welcome-avatar">
+            <img src="Douanes_Marocaines_ADII_Charaf_2015.jpg" alt="ADII" />
+          </div>
+          <div class="welcome-body">
+            <h2>Bonjour ! </h2>
+            <p>Je suis votre assistant IA pour explorer et comprendre les donnees d'arbitrage douanier. Toutes les reponses s'appuient uniquement sur les donnees deja calculees (Gold).</p>
+          </div>
+        </div>
+
+        <div class="suggestions">
+          <button class="suggestion-card" type="button" data-question="Combien de declarations sont MINORE, NORMAL et MAJORE ?">
+            <span class="s-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V10M10 19V5M16 19v-7" stroke-linecap="round"/></svg></span>
+            Combien de declarations sont MINORE, NORMAL et MAJORE ?
+          </button>
+          <button class="suggestion-card" type="button" data-question="Quel est le ratio unitaire moyen ?">
+            <span class="s-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 17l5-5 4 4 8-8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+            Quel est le ratio unitaire moyen ?
+          </button>
+          <button class="suggestion-card" type="button" data-question="Quelle est la repartition par NGP ?">
+            <span class="s-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v10l7 4a10 10 0 10-7-14z" stroke-linejoin="round"/></svg></span>
+            Quelle est la repartition par NGP ?
+          </button>
+          <button class="suggestion-card" type="button" data-question="Explique la declaration BADR_ID 170">
+            <span class="s-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.3-4.3" stroke-linecap="round"/></svg></span>
+            Explique la declaration BADR_ID 170
+          </button>
+        </div>
+
+        <div id="errorBanner" class="error-banner" style="display:none"></div>
+
+        <div class="thread" id="thread"></div>
+
+      </div>
+    </div>
+
+    <div class="input-area">
+      <div class="input-inner">
+        <form id="form">
+          <div class="input-shell">
+            <textarea id="input" rows="1" placeholder="Posez votre question sur les donnees d'arbitrage..." autocomplete="off"></textarea>
+            <button type="submit" class="send-btn" id="sendBtn" title="Envoyer">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+          </div>
+        </form>
+        <div class="input-footnote">Le chatbot repond uniquement a partir des donnees Gold. Il n'invente aucune information.</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ===================== HELP POPOVER ===================== -->
+<div class="popover-backdrop" id="helpBackdrop">
+  <div class="popover">
+    <h3>Comment utiliser l'assistant</h3>
+    <p>Posez une question en langage naturel sur les declarations douanieres analysees. L'assistant s'appuie uniquement sur les donnees Gold deja calculees par le pipeline (Spark + dbt) :</p>
+    <ul>
+      <li>KPI globaux et par categorie (NORMAL / MINORE / MAJORE)</li>
+      <li>Ratio unitaire, valeur declaree, quantite</li>
+      <li>Explication du classement d'une declaration precise (BADR_ID)</li>
+    </ul>
+    <p>L'assistant n'invente jamais un chiffre et ne recalcule jamais un verdict d'arbitrage - il lit et explique des donnees deja produites.</p>
+    <button class="btn-primary" id="helpClose" type="button">Compris</button>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

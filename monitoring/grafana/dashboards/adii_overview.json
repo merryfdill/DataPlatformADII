@@ -2,7 +2,297 @@
   "title": "ADII Overview",
   "uid": "adii-overview",
   "schemaVersion": 39,
-  "version": 1,
-  "panels": [],
-  "time": { "from": "now-24h", "to": "now" }
+  "version": 2,
+  "editable": true,
+  "timezone": "browser",
+  "time": { "from": "2024-08-21T00:00:00.000Z", "to": "2026-08-10T23:59:59.000Z" },
+  "refresh": "",
+  "tags": ["adii", "arbitrage", "gold", "dbt"],
+  "templating": {
+    "list": [
+      {
+        "name": "code_ngp",
+        "type": "query",
+        "label": "CODE_NGP",
+        "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+        "query": "SELECT DISTINCT CODE_NGP FROM iceberg.gold.fct_arbitrage ORDER BY 1",
+        "refresh": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": "",
+        "current": { "text": "All", "value": "$__all" },
+        "sort": 1
+      },
+      {
+        "name": "arbitrage",
+        "type": "query",
+        "label": "Verdict d'arbitrage",
+        "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+        "query": "SELECT DISTINCT ARBITRAGE FROM iceberg.gold.fct_arbitrage ORDER BY 1",
+        "refresh": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": "",
+        "current": { "text": "All", "value": "$__all" },
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Nombre total de declarations analysees",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 0, "w": 8, "h": 4 },
+      "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+          "rawSQL": "SELECT nb_declarations AS value FROM iceberg.gold.mart_arbitrage_kpi",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none", "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "blue", "value": null }] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value_and_name" }
+    },
+    {
+      "id": 2,
+      "title": "NORMAL",
+      "type": "stat",
+      "gridPos": { "x": 8, "y": 0, "w": 8, "h": 4 },
+      "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+          "rawSQL": "SELECT nb_normal AS value FROM iceberg.gold.mart_arbitrage_kpi",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none", "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "green", "value": null }] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value_and_name" }
+    },
+    {
+      "id": 3,
+      "title": "MINORE",
+      "type": "stat",
+      "gridPos": { "x": 16, "y": 0, "w": 8, "h": 4 },
+      "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+          "rawSQL": "SELECT nb_minore AS value FROM iceberg.gold.mart_arbitrage_kpi",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none", "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "orange", "value": null }] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value_and_name" }
+    },
+    {
+      "id": 4,
+      "title": "MAJORE",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 4, "w": 8, "h": 4 },
+      "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+          "rawSQL": "SELECT nb_majore AS value FROM iceberg.gold.mart_arbitrage_kpi",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none", "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "red", "value": null }] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value_and_name" }
+    },
+    {
+      "id": 5,
+      "title": "% MINORE",
+      "type": "stat",
+      "gridPos": { "x": 8, "y": 4, "w": 8, "h": 4 },
+      "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+          "rawSQL": "SELECT CAST(pct_minore AS DOUBLE) AS value FROM iceberg.gold.mart_arbitrage_kpi",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 1, "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "orange", "value": null }] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value_and_name" }
+    },
+    {
+      "id": 6,
+      "title": "% MAJORE",
+      "type": "stat",
+      "gridPos": { "x": 16, "y": 4, "w": 8, "h": 4 },
+      "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+          "rawSQL": "SELECT CAST(pct_majore AS DOUBLE) AS value FROM iceberg.gold.mart_arbitrage_kpi",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 1, "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "red", "value": null }] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value_and_name" }
+    },
+    {
+      "id": 7,
+      "title": "Ratio unitaire moyen",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 8, "w": 8, "h": 4 },
+      "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+          "rawSQL": "SELECT ratio_moyen AS value FROM iceberg.gold.mart_arbitrage_kpi",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 3, "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "blue", "value": null }] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value_and_name" }
+    },
+    {
+      "id": 8,
+      "title": "Valeur totale (MAD)",
+      "type": "stat",
+      "gridPos": { "x": 8, "y": 8, "w": 8, "h": 4 },
+      "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+          "rawSQL": "SELECT valeur_totale_mad AS value FROM iceberg.gold.mart_arbitrage_kpi",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 0, "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "blue", "value": null }] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value_and_name" }
+    },
+    {
+      "id": 9,
+      "title": "Quantite totale (unites)",
+      "type": "stat",
+      "gridPos": { "x": 16, "y": 8, "w": 8, "h": 4 },
+      "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+          "rawSQL": "SELECT quantite_totale AS value FROM iceberg.gold.mart_arbitrage_kpi",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 0, "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "blue", "value": null }] } }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value_and_name" }
+    },
+    {
+      "id": 10,
+      "title": "Repartition NORMAL / MINORE / MAJORE",
+      "type": "piechart",
+      "gridPos": { "x": 0, "y": 12, "w": 8, "h": 9 },
+      "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+          "rawSQL": "SELECT ARBITRAGE, count(*) AS nb FROM iceberg.gold.fct_arbitrage WHERE DATE_DEPOT BETWEEN date($__timeFrom()) AND date($__timeTo()) AND CODE_NGP IN (${code_ngp:sqlstring}) AND ARBITRAGE IN (${arbitrage:sqlstring}) GROUP BY ARBITRAGE",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "values": ["value", "percent"] } }
+    },
+    {
+      "id": 11,
+      "title": "Repartition des arbitrages par CODE_NGP",
+      "type": "barchart",
+      "gridPos": { "x": 8, "y": 12, "w": 16, "h": 9 },
+      "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+          "rawSQL": "SELECT CODE_NGP, count(*) FILTER (WHERE ARBITRAGE = 'NORMAL') AS NORMAL, count(*) FILTER (WHERE ARBITRAGE = 'MINORE') AS MINORE, count(*) FILTER (WHERE ARBITRAGE = 'MAJORE') AS MAJORE FROM iceberg.gold.fct_arbitrage WHERE DATE_DEPOT BETWEEN date($__timeFrom()) AND date($__timeTo()) AND CODE_NGP IN (${code_ngp:sqlstring}) AND ARBITRAGE IN (${arbitrage:sqlstring}) GROUP BY CODE_NGP ORDER BY CODE_NGP",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "options": { "xField": "CODE_NGP", "stacking": "normal", "legend": { "displayMode": "list", "placement": "bottom" } }
+    },
+    {
+      "id": 12,
+      "title": "Ratio unitaire moyen par CODE_NGP",
+      "type": "barchart",
+      "gridPos": { "x": 0, "y": 21, "w": 8, "h": 9 },
+      "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+          "rawSQL": "SELECT CODE_NGP, avg(RATIO_UNITAIRE) AS ratio_moyen FROM iceberg.gold.fct_arbitrage WHERE DATE_DEPOT BETWEEN date($__timeFrom()) AND date($__timeTo()) AND CODE_NGP IN (${code_ngp:sqlstring}) AND ARBITRAGE IN (${arbitrage:sqlstring}) GROUP BY CODE_NGP ORDER BY CODE_NGP",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 3 }, "overrides": [] },
+      "options": { "xField": "CODE_NGP", "legend": { "displayMode": "none" } }
+    },
+    {
+      "id": 13,
+      "title": "Valeur declaree totale par CODE_NGP (MAD)",
+      "type": "barchart",
+      "gridPos": { "x": 8, "y": 21, "w": 8, "h": 9 },
+      "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+          "rawSQL": "SELECT CODE_NGP, sum(VALEUR_MAD) AS valeur_totale_mad FROM iceberg.gold.fct_arbitrage WHERE DATE_DEPOT BETWEEN date($__timeFrom()) AND date($__timeTo()) AND CODE_NGP IN (${code_ngp:sqlstring}) AND ARBITRAGE IN (${arbitrage:sqlstring}) GROUP BY CODE_NGP ORDER BY CODE_NGP",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 0 }, "overrides": [] },
+      "options": { "xField": "CODE_NGP", "legend": { "displayMode": "none" } }
+    },
+    {
+      "id": 14,
+      "title": "Quantite totale par CODE_NGP",
+      "type": "barchart",
+      "gridPos": { "x": 16, "y": 21, "w": 8, "h": 9 },
+      "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+          "rawSQL": "SELECT CODE_NGP, sum(QUANTITE) AS quantite_totale FROM iceberg.gold.fct_arbitrage WHERE DATE_DEPOT BETWEEN date($__timeFrom()) AND date($__timeTo()) AND CODE_NGP IN (${code_ngp:sqlstring}) AND ARBITRAGE IN (${arbitrage:sqlstring}) GROUP BY CODE_NGP ORDER BY CODE_NGP",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 0 }, "overrides": [] },
+      "options": { "xField": "CODE_NGP", "legend": { "displayMode": "none" } }
+    },
+    {
+      "id": 15,
+      "title": "Evolution temporelle des arbitrages (mensuel)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 30, "w": 24, "h": 9 },
+      "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "trino-datasource", "uid": "PD73EC80E50767796" },
+          "rawSQL": "SELECT mois, nb_normal, nb_minore, nb_majore FROM iceberg.gold.mart_arbitrage_temps WHERE mois BETWEEN date($__timeFrom()) AND date($__timeTo()) ORDER BY mois",
+          "format": "timeseries"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none", "custom": { "drawStyle": "bars", "fillOpacity": 60, "stacking": { "mode": "normal" } } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    }
+  ]
 }

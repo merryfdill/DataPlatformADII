@@ -1,0 +1,588 @@
+"""ADII main pipeline - orchestrates Bronze -> Silver -> ML -> Gold -> dbt ->
+Data Quality, replacing the manual `docker exec` sequence used throughout
+every previous phase of this project.
+
+Schedule: 03:00 Africa/Casablanca daily. BADR is NEVER regenerated - only
+re-read from the existing, fixed data/badr.db (see utils/config.py and the
+approved implementation plan, section "Constat cle sur la granularite des
+etapes"). Scraping IS refreshed daily (live retail prices legitimately
+change, unlike the fixed BADR dataset).
+"""
+
+import logging
+import subprocess
+import sys
+
+import pendulum
+
+from airflow.sdk import DAG, task
+
+sys.path.insert(0, "/opt/airflow/ingestion")
+# apply_model.py and prepare_matching.py live under ingestion/ml/, not
+# directly under ingestion/ - both dirs use their own local get_s3_client()
+# (no shared package __init__), so ingestion/ml must be importable too.
+sys.path.insert(0, "/opt/airflow/ingestion/ml")
+
+from utils import metrics
+from utils.docker_exec import run_dbt, run_spark_job
+from utils.error_handler import (
+    RETRY_POLICY_DATA,
+    RETRY_POLICY_INFRA,
+    TIMEOUT_DBT,
+    TIMEOUT_LIGHT_TASK,
+    TIMEOUT_SCRAPING,
+    TIMEOUT_SPARK_JOB,
+    DataError,
+    DataQualityError,
+    DbtError,
+    InfrastructureError,
+    ScrapingError,
+    SparkJobError,
+)
+from utils.trino_client import run_query
+
+logger = logging.getLogger(__name__)
+
+LOCAL_TZ = "Africa/Casablanca"
+
+
+def _record_task_result(context, status: str) -> None:
+    """Wired to every task via default_args - records one row in
+    reporting.task_runs per task execution, success or failure. Never
+    raises: a metrics-recording bug must not break the pipeline itself.
+    """
+    ti = context["task_instance"]
+    run_id = context["dag_run"].run_id
+    exception = context.get("exception")
+    error_category = getattr(exception, "category", None) if exception else None
+    error_message = getattr(exception, "summary", str(exception)) if exception else None
+    try:
+        metrics.record_task_run(
+            run_id=run_id,
+            task_id=ti.task_id,
+            status=status,
+            start_time=ti.start_date,
+            end_time=ti.end_date,
+            retries=(ti.try_number - 1) if getattr(ti, "try_number", None) else 0,
+            error_category=error_category,
+            error_message=error_message,
+        )
+    except Exception:
+        logger.exception("Echec de l'enregistrement des metriques pour la tache %s", ti.task_id)
+
+
+def _on_success(context):
+    _record_task_result(context, "SUCCESS")
+
+
+def _on_failure(context):
+    _record_task_result(context, "FAILED")
+
+
+default_args = {
+    "on_success_callback": _on_success,
+    "on_failure_callback": _on_failure,
+}
+
+with DAG(
+    dag_id="adii_main_pipeline",
+    description="Pipeline quotidien ADII : BADR+scraping -> Bronze -> Silver -> ML -> Gold -> dbt -> Data Quality",
+    schedule="0 3 * * *",
+    start_date=pendulum.datetime(2026, 1, 1, tz=LOCAL_TZ),
+    catchup=False,
+    max_active_runs=1,
+    default_args=default_args,
+    tags=["adii", "pipeline"],
+) as dag:
+
+    @task(
+        task_id="check_environment",
+        retries=RETRY_POLICY_INFRA["retries"],
+        retry_delay=RETRY_POLICY_INFRA["retry_delay"],
+        retry_exponential_backoff=RETRY_POLICY_INFRA["retry_exponential_backoff"],
+        execution_timeout=TIMEOUT_LIGHT_TASK,
+    )
+    def check_environment(**context):
+        """Verifies MinIO/Trino are reachable, and initializes this run's
+        row in reporting.pipeline_runs - must happen before any other
+        task's on_success/on_failure callback tries to insert a task_runs
+        row that references it via foreign key.
+        """
+        run_id = context["dag_run"].run_id
+        logical_date = context["logical_date"]
+        metrics.start_run(run_id, logical_date)
+
+        import config as ingestion_config
+        from bronze_ingestion import get_s3_client
+
+        try:
+            s3 = get_s3_client()
+            s3.head_bucket(Bucket=ingestion_config.MINIO_BUCKET)
+        except Exception as exc:
+            raise InfrastructureError(
+                f"MinIO injoignable a {ingestion_config.MINIO_ENDPOINT_HOST} "
+                f"(bucket '{ingestion_config.MINIO_BUCKET}').",
+                details=str(exc),
+            ) from exc
+
+        try:
+            from utils.trino_client import run_query
+
+            run_query("SELECT 1")
+        except Exception as exc:
+            raise InfrastructureError("Trino injoignable (SELECT 1 a echoue).", details=str(exc)) from exc
+
+        return {"minio": "ok", "trino": "ok"}
+
+    @task(
+        task_id="ingest_badr",
+        retries=RETRY_POLICY_INFRA["retries"],
+        retry_delay=RETRY_POLICY_INFRA["retry_delay"],
+        execution_timeout=TIMEOUT_LIGHT_TASK,
+    )
+    def ingest_badr(_env_ok):
+        """Reads the EXISTING, fixed data/badr.db (never regenerated) and
+        uploads it to Bronze. Reuses ingestion/bronze_ingestion.py's own
+        ingest_badr()/verify_roundtrip() unmodified.
+        """
+        import config as ingestion_config
+        from bronze_ingestion import get_s3_client
+        from bronze_ingestion import ingest_badr as _ingest_badr
+        from bronze_ingestion import verify_roundtrip
+
+        s3 = get_s3_client()
+        try:
+            df = _ingest_badr(s3)
+            verify_roundtrip(s3, ingestion_config.MINIO_BUCKET, ingestion_config.BRONZE_BADR_KEY, df, "BADR")
+        except FileNotFoundError as exc:
+            raise DataError(f"data/badr.db introuvable : {exc}") from exc
+        except Exception as exc:
+            raise InfrastructureError("Echec de l'ingestion Bronze BADR (MinIO).", details=str(exc)) from exc
+
+        return {"rows": len(df)}
+
+    @task(
+        task_id="scrape_web",
+        retries=RETRY_POLICY_INFRA["retries"],
+        retry_delay=RETRY_POLICY_INFRA["retry_delay"],
+        execution_timeout=TIMEOUT_SCRAPING,
+    )
+    def scrape_web(_env_ok, **context):
+        """Runs ingestion/scraping/scrape_prices.py unmodified (own
+        argparse CLI) via subprocess - refreshes data/prix_web.csv. Unlike
+        BADR, this IS meant to run daily: live retail prices legitimately
+        change.
+
+        Completeness check: scrape_prices.py catches per-category failures
+        internally (logs a WARNING, keeps going) and exits 0 even if a
+        category comes back with 0 products - confirmed by two real runs on
+        2026-08-22, where total volume swung from 21 to 70 products and at
+        least one run had 2 of the 3 categories completely empty while
+        still "succeeding". Left unchecked, a silently empty category would
+        flow through matching/prix_reference as "hors perimetre" instead of
+        "scraping failed", and Gold would shrink with every task still
+        green. This check makes that failure loud instead of silent.
+
+        No offline fallback yet (reusing the last known-good prix_web.csv
+        when scraping is incomplete) - noted as a follow-up to decide after
+        tasks 8-13, not implemented here.
+        """
+        import pandas as pd
+
+        import config as ingestion_config
+
+        result = subprocess.run(
+            ["python", "/opt/airflow/ingestion/scraping/scrape_prices.py"],
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT_SCRAPING.total_seconds(),
+        )
+        tail = (result.stdout + result.stderr)[-4000:]
+        if result.returncode != 0:
+            raise ScrapingError(f"scrape_prices.py a echoue (exit code {result.returncode}).", details=tail)
+
+        df = pd.read_csv(ingestion_config.SCRAPING_OUTPUT_CSV)
+        counts = df["categorie"].value_counts().to_dict()
+        expected_categories = list(ingestion_config.SCRAPING_CATEGORIES.keys())
+        counts_full = {cat: int(counts.get(cat, 0)) for cat in expected_categories}
+
+        run_id = context["dag_run"].run_id
+        metrics.record_scraping_counts(run_id, counts_full)
+
+        empty = [cat for cat, n in counts_full.items() if n == 0]
+        if empty:
+            raise ScrapingError(
+                f"Categorie(s) vide(s) apres scraping : {', '.join(empty)} "
+                f"(repartition complete : {counts_full}). "
+                "Gold serait incomplet en aval (matching/prix_reference sans reference pour cette categorie).",
+                details=tail,
+            )
+
+        return {"counts": counts_full, "total": sum(counts_full.values())}
+
+    @task(
+        task_id="ingest_bronze_scraping",
+        retries=RETRY_POLICY_INFRA["retries"],
+        retry_delay=RETRY_POLICY_INFRA["retry_delay"],
+        execution_timeout=TIMEOUT_LIGHT_TASK,
+    )
+    def ingest_bronze_scraping(_scrape_result):
+        import config as ingestion_config
+        from bronze_ingestion import get_s3_client
+        from bronze_ingestion import ingest_scraping as _ingest_scraping
+        from bronze_ingestion import verify_roundtrip
+
+        s3 = get_s3_client()
+        try:
+            df = _ingest_scraping(s3)
+            verify_roundtrip(s3, ingestion_config.MINIO_BUCKET, ingestion_config.BRONZE_SCRAPING_KEY, df, "Scraping")
+        except FileNotFoundError as exc:
+            raise DataError(f"data/prix_web.csv introuvable : {exc}") from exc
+        except Exception as exc:
+            raise InfrastructureError("Echec de l'ingestion Bronze scraping (MinIO).", details=str(exc)) from exc
+
+        return {"rows": len(df)}
+
+    @task(
+        task_id="bronze_to_silver",
+        retries=RETRY_POLICY_DATA["retries"],
+        retry_delay=RETRY_POLICY_DATA["retry_delay"],
+        execution_timeout=TIMEOUT_SPARK_JOB,
+    )
+    def bronze_to_silver(_badr_result, _bronze_scraping_result):
+        """Spark: Bronze -> Silver technical cleaning (types, trimming,
+        null/duplicate checks) for both sources. spark/jobs/bronze_to_silver.py,
+        unmodified - see utils/config.py for the verbatim spark-submit flags.
+        """
+        try:
+            return {"log_tail": run_spark_job("bronze_to_silver.py")[-1000:]}
+        except SparkJobError:
+            raise
+
+    @task(
+        task_id="classification_ngp",
+        retries=RETRY_POLICY_DATA["retries"],
+        retry_delay=RETRY_POLICY_DATA["retry_delay"],
+        execution_timeout=TIMEOUT_LIGHT_TASK,
+    )
+    def classification_ngp(_silver_result):
+        """Batch CODE_NGP classification via ingestion/ml/apply_model.py
+        (unmodified) - applies the ALREADY-TRAINED models/ngp_classifier.joblib
+        to Silver scraping. Never retrains (train_model.py is not part of
+        this DAG, deliberately - see the approved plan).
+        """
+        import apply_model
+
+        try:
+            apply_model.main()
+        except FileNotFoundError as exc:
+            raise DataError(f"Source ou modele introuvable pour la classification NGP : {exc}") from exc
+        except ValueError as exc:
+            raise DataQualityError(f"Controle de coherence de apply_model.py echoue : {exc}") from exc
+        except Exception as exc:
+            raise InfrastructureError("Echec de la classification NGP (MinIO).", details=str(exc)) from exc
+
+        return {"status": "ok"}
+
+    @task(
+        task_id="matching_produits",
+        retries=RETRY_POLICY_DATA["retries"],
+        retry_delay=RETRY_POLICY_DATA["retry_delay"],
+        execution_timeout=TIMEOUT_LIGHT_TASK,
+    )
+    def matching_produits(_classification_result):
+        """CODE_NGP-level reconciliation between Silver BADR and the
+        ML-predicted scraping output via ingestion/ml/prepare_matching.py
+        (unmodified) - not the final arbitrage, no price/ratio/verdict here.
+        """
+        import prepare_matching
+
+        try:
+            prepare_matching.main()
+        except FileNotFoundError as exc:
+            raise DataError(f"Source introuvable pour le matching : {exc}") from exc
+        except ValueError as exc:
+            raise DataQualityError(f"Controle de coherence de prepare_matching.py echoue : {exc}") from exc
+        except Exception as exc:
+            raise InfrastructureError("Echec du matching produits (MinIO).", details=str(exc)) from exc
+
+        return {"status": "ok"}
+
+    @task(
+        task_id="taux_change",
+        retries=RETRY_POLICY_DATA["retries"],
+        retry_delay=RETRY_POLICY_DATA["retry_delay"],
+        execution_timeout=TIMEOUT_LIGHT_TASK,
+    )
+    def taux_change(_env_ok):
+        """Currency reference table (Bank Al-Maghrib rates) via
+        ingestion/build_taux_change.py (unmodified) - independent of
+        Silver, only needs check_environment.
+        """
+        import build_taux_change
+
+        try:
+            build_taux_change.main()
+        except ValueError as exc:
+            raise DataQualityError(f"Controle de coherence de build_taux_change.py echoue : {exc}") from exc
+        except Exception as exc:
+            raise InfrastructureError("Echec de la construction du taux de change (MinIO).", details=str(exc)) from exc
+
+        return {"status": "ok"}
+
+    @task(
+        task_id="valeur_mad_quantite",
+        retries=RETRY_POLICY_DATA["retries"],
+        retry_delay=RETRY_POLICY_DATA["retry_delay"],
+        execution_timeout=TIMEOUT_SPARK_JOB,
+    )
+    def valeur_mad_quantite(_silver_result, _taux_change_result):
+        """Spark: joins Silver BADR with the currency reference table
+        (VALEUR_MAD = VALEUR * TAUX_MAD), carries QUANTITE through.
+        spark/jobs/badr_valeur_prep.py, unmodified.
+        """
+        return {"log_tail": run_spark_job("badr_valeur_prep.py")[-1000:]}
+
+    @task(
+        task_id="prix_reference",
+        retries=RETRY_POLICY_DATA["retries"],
+        retry_delay=RETRY_POLICY_DATA["retry_delay"],
+        execution_timeout=TIMEOUT_SPARK_JOB,
+    )
+    def prix_reference(_matching_result):
+        """Spark: median/min/mean/max retail price per CODE_NGP from the
+        ML-predicted scraping output. spark/jobs/prix_reference.py,
+        unmodified.
+        """
+        return {"log_tail": run_spark_job("prix_reference.py")[-1000:]}
+
+    @task(
+        task_id="ratio_unitaire",
+        retries=RETRY_POLICY_DATA["retries"],
+        retry_delay=RETRY_POLICY_DATA["retry_delay"],
+        execution_timeout=TIMEOUT_SPARK_JOB,
+    )
+    def ratio_unitaire(_valeur_result, _prix_ref_result):
+        """Spark: VALEUR_UNITAIRE_MAD = VALEUR_MAD / QUANTITE, RATIO_UNITAIRE
+        = VALEUR_UNITAIRE_MAD / PRIX_REFERENCE. spark/jobs/ratio_unitaire.py,
+        unmodified. No threshold, no NORMAL/MINORE/MAJORE here.
+        """
+        return {"log_tail": run_spark_job("ratio_unitaire.py")[-1000:]}
+
+    @task(
+        task_id="arbitrage",
+        retries=RETRY_POLICY_DATA["retries"],
+        retry_delay=RETRY_POLICY_DATA["retry_delay"],
+        execution_timeout=TIMEOUT_SPARK_JOB,
+    )
+    def arbitrage(_ratio_result):
+        """Spark: NORMAL/MINORE/MAJORE from RATIO_UNITAIRE via the
+        deterministic per-CODE_NGP P10/P90 business rule.
+        spark/jobs/arbitrage_gold.py, unmodified - this DAG never computes
+        or alters the thresholds, only triggers the existing job.
+        """
+        return {"log_tail": run_spark_job("arbitrage_gold.py")[-1000:]}
+
+    @task(
+        task_id="register_gold_iceberg",
+        retries=RETRY_POLICY_DATA["retries"],
+        retry_delay=RETRY_POLICY_DATA["retry_delay"],
+        execution_timeout=TIMEOUT_SPARK_JOB,
+    )
+    def register_gold_iceberg(_arbitrage_result):
+        """Spark: registers the Gold Parquet as the Iceberg table
+        iceberg.gold.arbitrage - the bridge without which Trino/dbt/the
+        chatbot see nothing. spark/jobs/register_gold_iceberg.py,
+        unmodified (the extra path-style-access flag is already applied
+        via SPARK_SUBMIT_EXTRA_ARGS_BY_JOB in utils/config.py).
+        """
+        return {"log_tail": run_spark_job("register_gold_iceberg.py")[-1000:]}
+
+    @task(
+        task_id="dbt_run",
+        retries=RETRY_POLICY_DATA["retries"],
+        retry_delay=RETRY_POLICY_DATA["retry_delay"],
+        execution_timeout=TIMEOUT_DBT,
+    )
+    def dbt_run(_register_result):
+        """`dbt run --threads 1` inside the dbt container (models
+        unmodified) - rebuilds stg_declarations/fct_arbitrage/mart_* from
+        the freshly registered iceberg.gold.arbitrage source.
+        """
+        return {"log_tail": run_dbt("run")[-1500:]}
+
+    @task(
+        task_id="dbt_test",
+        retries=RETRY_POLICY_DATA["retries"],
+        retry_delay=RETRY_POLICY_DATA["retry_delay"],
+        execution_timeout=TIMEOUT_DBT,
+    )
+    def dbt_test(_dbt_run_result, **context):
+        """`dbt test --threads 1` - the 13 existing tests (not_null, unique,
+        accepted_values, positivity - see docs/dbt_gold.md). Parses dbt's
+        own `Done. PASS=x WARN=y ERROR=z` summary line and records it into
+        reporting.data_quality_runs immediately (before any possible raise)
+        so the count survives even if some test failed.
+        """
+        import re
+
+        run_id = context["dag_run"].run_id
+        failed = False
+        try:
+            output = run_dbt("test")
+        except DbtError as exc:
+            output = exc.details or ""
+            failed = True
+
+        m = re.search(r"PASS=(\d+)\s+WARN=(\d+)\s+ERROR=(\d+)", output)
+        passed, warned, errored = (int(x) for x in m.groups()) if m else (0, 0, 0)
+        metrics.record_data_quality(run_id, {"dbt_tests_passed": passed, "dbt_tests_failed": errored + warned})
+
+        if failed:
+            raise DbtError(f"dbt test : {errored} test(s) en echec sur {passed + errored + warned}.", details=output[-2000:])
+        return {"passed": passed, "warned": warned, "errored": errored}
+
+    @task(
+        task_id="data_quality_extra",
+        retries=RETRY_POLICY_DATA["retries"],
+        retry_delay=RETRY_POLICY_DATA["retry_delay"],
+        execution_timeout=TIMEOUT_LIGHT_TASK,
+    )
+    def data_quality_extra(_dbt_test_result, **context):
+        """Complements the 13 dbt tests with counts dbt itself doesn't
+        expose as simple numbers: duplicates, invalid values, and - IMPORTANT -
+        "hors perimetre" (BADR declarations whose CODE_NGP falls outside the
+        3 scraped categories) is reported as exactly that, never as
+        "rejected"/"error": it is a documented scope limitation (Phase 2.13),
+        not a data quality failure. See docs/arbitrage_gold.md.
+        """
+        run_id = context["dag_run"].run_id
+
+        dq = run_query(
+            """
+            SELECT
+                (SELECT count(*) - count(DISTINCT badr_id) FROM fct_arbitrage) AS duplicates,
+                (SELECT count(*) FROM fct_arbitrage
+                    WHERE badr_id IS NULL OR code_ngp IS NULL OR ratio_unitaire IS NULL OR arbitrage IS NULL) AS nulls_critical,
+                (SELECT count(*) FROM fct_arbitrage
+                    WHERE code_ngp NOT IN ('85171300','84713000','85287200')) AS invalid_code_ngp,
+                (SELECT count(*) FROM fct_arbitrage WHERE prix_reference <= 0 OR valeur_mad <= 0) AS invalid_prices,
+                (SELECT count(*) FROM fct_arbitrage WHERE ratio_unitaire <= 0) AS invalid_ratios
+            """
+        )[0]
+
+        # Silver BADR isn't Iceberg-registered (plain Parquet) - not queryable from Trino.
+        # "hors perimetre" (NOT "rejected"/"error" - see docs/arbitrage_gold.md) is
+        # derived from the known, fixed BADR source size (5000, data/badr.db - never
+        # regenerated by this DAG) minus how many made it into Gold.
+        rows_out_of_scope = 5000 - run_query("SELECT count(*) AS n FROM fct_arbitrage")[0]["n"]
+
+        dq_full = {
+            "duplicates": dq["duplicates"],
+            "nulls_critical": dq["nulls_critical"],
+            "invalid_code_ngp": dq["invalid_code_ngp"],
+            "invalid_prices": dq["invalid_prices"],
+            "invalid_ratios": dq["invalid_ratios"],
+            "unmatched_products": 0,
+            "rows_out_of_scope": rows_out_of_scope,
+        }
+
+        if any(v > 0 for k, v in dq_full.items() if k != "rows_out_of_scope"):
+            raise DataQualityError(f"Anomalies de qualite detectees : {dq_full}")
+
+        metrics.record_data_quality(run_id, dq_full)
+        return dq_full
+
+    @task(
+        task_id="validation_finale",
+        retries=0,
+        execution_timeout=TIMEOUT_LIGHT_TASK,
+    )
+    def validation_finale(_dq_result):
+        """Sanity gate: Gold must be non-empty and within a plausible order
+        of magnitude (not 0, not more than the 5000-row BADR source).
+        """
+        count = run_query("SELECT count(*) AS n FROM fct_arbitrage")[0]["n"]
+        if count == 0:
+            raise DataQualityError("Gold (fct_arbitrage) est vide - echec de validation finale.")
+        if count > 5000:
+            raise DataQualityError(f"Gold (fct_arbitrage) a {count} lignes, plus que les 5000 BADR sources - incoherent.")
+        return {"gold_rows": count}
+
+    @task(
+        task_id="collect_metrics",
+        trigger_rule="all_done",
+        retries=0,
+        execution_timeout=TIMEOUT_LIGHT_TASK,
+    )
+    def collect_metrics(_validation_result, **context):
+        """Runs regardless of upstream failures (trigger_rule=all_done) so
+        the 07:00 report always has something to read, even on a failed
+        run. Queries Gold directly via Trino for the business KPIs (never
+        recomputed - straight aggregation of what Spark/dbt already
+        produced), then finalizes reporting.pipeline_runs with the real
+        global status.
+        """
+        run_id = context["dag_run"].run_id
+        logical_date = context["logical_date"]
+
+        dag_run = context["dag_run"]
+        # dag_run.get_task_instances() does not exist on Airflow 3.x's
+        # TaskFlow SDK DagRun (airflow.sdk) - only on the classic 2.x ORM
+        # model. Read task states directly from Airflow's own task_instance
+        # table instead (same Postgres DB, see utils/metrics.get_task_states).
+        all_states = metrics.get_task_states(dag_run.dag_id, run_id)
+        states = {tid: s for tid, s in all_states.items() if tid != "collect_metrics"}
+        critical_tasks = {"arbitrage", "register_gold_iceberg", "dbt_run", "dbt_test"}
+        if all(s == "success" for s in states.values()):
+            global_status = "SUCCESS"
+        elif any(states.get(t) == "failed" for t in critical_tasks):
+            global_status = "FAILED"
+        else:
+            global_status = "PARTIAL"
+
+        try:
+            kpi = run_query("SELECT * FROM mart_arbitrage_kpi")[0]
+            metrics.record_business_metrics(run_id, logical_date, {
+                "nb_declarations": kpi["nb_declarations"],
+                "nb_normal": kpi["nb_normal"],
+                "nb_minore": kpi["nb_minore"],
+                "nb_majore": kpi["nb_majore"],
+                "pct_normal": float(kpi["pct_normal"]),
+                "pct_minore": float(kpi["pct_minore"]),
+                "pct_majore": float(kpi["pct_majore"]),
+                "ratio_moyen": kpi["ratio_moyen"],
+                "ratio_median": kpi["ratio_median"],
+                "ratio_min": run_query("SELECT min(ratio_unitaire) AS v FROM fct_arbitrage")[0]["v"],
+                "ratio_max": run_query("SELECT max(ratio_unitaire) AS v FROM fct_arbitrage")[0]["v"],
+                "valeur_declaree_moyenne": run_query("SELECT avg(valeur_mad) AS v FROM fct_arbitrage")[0]["v"],
+                "prix_reference_moyen": run_query("SELECT avg(prix_reference) AS v FROM fct_arbitrage")[0]["v"],
+                "valeur_totale_mad": kpi["valeur_totale_mad"],
+                "quantite_totale": kpi["quantite_totale"],
+                "nb_hors_perimetre": 5000 - kpi["nb_declarations"],
+                "nb_sans_code_ngp": 0,
+            })
+        except Exception:
+            logger.exception("Impossible de lire les KPI Gold (Gold probablement indisponible sur ce run en echec).")
+
+        metrics.finish_run(run_id, global_status, notes=f"task states: {states}")
+        return {"global_status": global_status}
+
+    env_ok = check_environment()
+    badr_result = ingest_badr(env_ok)
+    scrape_result = scrape_web(env_ok)
+    bronze_scraping_result = ingest_bronze_scraping(scrape_result)
+    silver_result = bronze_to_silver(badr_result, bronze_scraping_result)
+    classification_result = classification_ngp(silver_result)
+    matching_result = matching_produits(classification_result)
+    taux_change_result = taux_change(env_ok)
+    valeur_result = valeur_mad_quantite(silver_result, taux_change_result)
+    prix_ref_result = prix_reference(matching_result)
+    ratio_result = ratio_unitaire(valeur_result, prix_ref_result)
+    arbitrage_result = arbitrage(ratio_result)
+    register_result = register_gold_iceberg(arbitrage_result)
+    dbt_run_result = dbt_run(register_result)
+    dbt_test_result = dbt_test(dbt_run_result)
+    dq_result = data_quality_extra(dbt_test_result)
+    validation_result = validation_finale(dq_result)
+    collect_metrics(validation_result)

@@ -19,6 +19,13 @@ Run with (see the exact command used in the Phase 2.4 report):
         --conf spark.hadoop.fs.s3a.aws.credentials.provider=org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider \
         /home/iceberg/jobs/bronze_to_silver.py
 
+Optionally append `--run-date YYYY-MM-DD` after the job path (Etape 2, daily
+simulation phase) to read the partitioned bronze/*/date=.../ layout for that
+day instead of the legacy fixed bronze/*/*.parquet paths - the flags above
+are unchanged either way, this is a script argument, not a spark-submit
+flag. Omit it entirely for the original behavior, which is still what the
+currently-live main_pipeline.py relies on.
+
 Why --packages instead of baking jars into the image: the spark-iceberg base
 image ships Iceberg's own S3 support (iceberg-aws-bundle) for Iceberg
 tables/catalog, but not the generic Hadoop `s3a://` filesystem connector
@@ -30,14 +37,34 @@ fixed path, so a rerun replaces the previous output directory's contents
 instead of accumulating files. Each dataset is `.coalesce(1)` before writing
 since MVP volumes are tiny (5000 and 58 rows) - this keeps the output to one
 clean part-file per dataset rather than a scattered multi-partition layout.
+Silver itself is NOT partitioned by this step even in --run-date mode (see
+the module-level path comments) - only the Bronze read side changes.
 """
+
+import argparse
+from datetime import date
 
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import DecimalType, LongType
 
+# Legacy fixed Bronze paths - still what the currently-live main_pipeline.py
+# produces (ingest_badr/ingest_bronze_scraping called with no run_date) and
+# therefore still the default here when --run-date is omitted.
 BRONZE_BADR_PATH = "s3a://datalake/bronze/badr/badr.parquet"
 BRONZE_SCRAPING_PATH = "s3a://datalake/bronze/scraping/prix_web.parquet"
+
+# Partitioned Bronze paths (Etape 2) - read from when --run-date is given.
+# Must match ingestion/config.py's bronze_badr_key/bronze_scraping_key.
+BRONZE_BADR_PARTITIONED_TEMPLATE = "s3a://datalake/bronze/badr/date={run_date}/badr.parquet"
+BRONZE_SCRAPING_PARTITIONED_TEMPLATE = "s3a://datalake/bronze/scraping/date={run_date}/prix_web.parquet"
+
+# Silver stays a single fixed, always-current-state path in both modes -
+# not partitioned in this step. See Etape 2 analysis: BADR's Bronze
+# partition is already a full snapshot, so Silver BADR needs no change at
+# all; scraping's Silver historization is deliberately deferred (would
+# require prepare_matching.py/apply_model.py/prix_reference.py to also
+# become period-aware, which is Etape 3's concern, not this one's).
 SILVER_BADR_PATH = "s3a://datalake/silver/badr/"
 SILVER_SCRAPING_PATH = "s3a://datalake/silver/scraping/"
 
@@ -57,12 +84,13 @@ def null_report(df, label):
         print(f"  {col_name}: {null_count} ({pct:.1f}%)")
 
 
-def process_badr(spark):
+def process_badr(spark, bronze_path):
     print("\n" + "=" * 60)
     print("BADR: Bronze -> Silver")
     print("=" * 60)
+    print(f"Bronze source: {bronze_path}")
 
-    bronze = spark.read.parquet(BRONZE_BADR_PATH)
+    bronze = spark.read.parquet(bronze_path)
     print("\nBronze schema:")
     bronze.printSchema()
     bronze_count = bronze.count()
@@ -119,12 +147,13 @@ def process_badr(spark):
     return bronze_count, silver_count
 
 
-def process_scraping(spark):
+def process_scraping(spark, bronze_path):
     print("\n" + "=" * 60)
     print("SCRAPING: Bronze -> Silver")
     print("=" * 60)
+    print(f"Bronze source: {bronze_path}")
 
-    bronze = spark.read.parquet(BRONZE_SCRAPING_PATH)
+    bronze = spark.read.parquet(bronze_path)
     print("\nBronze schema:")
     bronze.printSchema()
     bronze_count = bronze.count()
@@ -184,12 +213,35 @@ def process_scraping(spark):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--run-date",
+        type=str,
+        default=None,
+        help=(
+            "YYYY-MM-DD - reads the partitioned bronze/*/date=.../ layout for "
+            "that day instead of the legacy fixed bronze/*/*.parquet paths. "
+            "Omit entirely for the original behavior (still what the "
+            "currently-live main_pipeline.py relies on via an unmodified "
+            "spark-submit call with no trailing args)."
+        ),
+    )
+    args = parser.parse_args()
+
+    if args.run_date:
+        date.fromisoformat(args.run_date)  # validates format, raises ValueError otherwise
+        badr_path = BRONZE_BADR_PARTITIONED_TEMPLATE.format(run_date=args.run_date)
+        scraping_path = BRONZE_SCRAPING_PARTITIONED_TEMPLATE.format(run_date=args.run_date)
+    else:
+        badr_path = BRONZE_BADR_PATH
+        scraping_path = BRONZE_SCRAPING_PATH
+
     spark = SparkSession.builder.appName("bronze_to_silver").getOrCreate()
     spark.sparkContext.setLogLevel("WARN")
 
     try:
-        badr_bronze_n, badr_silver_n = process_badr(spark)
-        scraping_bronze_n, scraping_silver_n = process_scraping(spark)
+        badr_bronze_n, badr_silver_n = process_badr(spark, badr_path)
+        scraping_bronze_n, scraping_silver_n = process_scraping(spark, scraping_path)
 
         print("\n" + "=" * 60)
         print("SUMMARY")

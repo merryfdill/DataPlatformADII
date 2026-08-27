@@ -1,0 +1,54 @@
+version: 2
+
+sources:
+  - name: gold
+    description: >
+      Spark-computed Gold layer (Phases 2.17-2.21): BADR declarations
+      enriched with the ML-predicted CODE_NGP (IA 1), price reference
+      (scraping), unit valuation and the NORMAL/MINORE/MAJORE business-rule
+      arbitrage. Registered as an Iceberg table by
+      spark/jobs/register_gold_iceberg.py (Phase 2.22), which reads the
+      already-computed s3://datalake/gold/arbitrage/ Parquet as-is and
+      writes it unchanged - the values themselves are never recomputed by
+      dbt, only made queryable via Trino. See docs/arbitrage_gold.md and
+      docs/dbt_gold.md.
+    database: iceberg
+    schema: gold
+    tables:
+      - name: arbitrage
+        description: >
+          One row per BADR declaration whose normalized CODE_NGP falls
+          within the 3 scraped categories (Smartphone 85171300, PC Portable
+          84713000, Televiseur 85287200) and has a valid PRIX_REFERENCE -
+          see docs/arbitrage_gold.md for the full filtering logic (338 of
+          5000 BADR declarations).
+        columns:
+          - name: BADR_ID
+            description: BADR declaration identifier (Silver BADR `id`).
+          - name: DATE_DEPOT
+            description: Declaration filing date.
+          - name: CODE_NGP
+            description: Normalized 8-digit HS/NGP code (Phase 2.13 normalization applied).
+          - name: CODE_NGP_INITIAL
+            description: Original (un-normalized) BADR code as declared.
+          - name: PAYS
+            description: Country of origin / trade partner.
+          - name: DEVISE
+            description: Original invoicing currency (EUR/USD/GBP).
+          - name: QUANTITE
+            description: Commercial lot size in units (Phase 2.19).
+          - name: VALEUR
+            description: Raw declared value, in the original DEVISE.
+          - name: VALEUR_MAD
+            description: VALEUR converted to MAD (Phase 2.16, Bank Al-Maghrib official rate).
+          - name: PRIX_REFERENCE
+            description: Median retail price in MAD for this CODE_NGP, from the Jumia scraping (Phase 2.14).
+          - name: VALEUR_UNITAIRE_MAD
+            description: VALEUR_MAD / QUANTITE (Phase 2.20).
+          - name: RATIO_UNITAIRE
+            description: VALEUR_UNITAIRE_MAD / PRIX_REFERENCE (Phase 2.20).
+          - name: ARBITRAGE
+            description: >
+              NORMAL/MINORE/MAJORE - a transparent per-CODE_NGP percentile
+              business rule (Phase 2.21), not a second ML model. Values are
+              ASCII (no accents), documented in docs/arbitrage_gold.md.

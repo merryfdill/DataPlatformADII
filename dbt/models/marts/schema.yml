@@ -1,0 +1,56 @@
+version: 2
+
+models:
+  - name: fct_arbitrage
+    description: >
+      Fact table: one row per BADR declaration analyzed by the Spark
+      arbitrage pipeline (Phases 2.17-2.21). ARBITRAGE/RATIO_UNITAIRE/etc.
+      are Spark's business-computed results, not recomputed by dbt.
+      BADR_ID is verified unique (338/338 distinct, Phase 2.22) - see
+      docs/dbt_gold.md.
+    columns:
+      - name: BADR_ID
+        description: BADR declaration identifier - one row per declaration.
+        tests:
+          - not_null
+          - unique
+      - name: CODE_NGP
+        description: Normalized HS/NGP code, must be one of the 3 scraped categories.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['85171300', '84713000', '85287200']
+      - name: ARBITRAGE
+        description: >
+          Business-rule arbitrage result (Phase 2.21) - ASCII values,
+          documented in docs/arbitrage_gold.md.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['NORMAL', 'MINORE', 'MAJORE']
+      - name: RATIO_UNITAIRE
+        description: VALEUR_UNITAIRE_MAD / PRIX_REFERENCE (Phase 2.20).
+        tests:
+          - not_null
+
+  - name: mart_arbitrage_kpi
+    description: Global KPIs over fct_arbitrage - one row (Phase 2.22).
+
+  - name: mart_arbitrage_par_ngp
+    description: KPIs grouped by CODE_NGP - one row per code (Phase 2.22).
+    columns:
+      - name: CODE_NGP
+        tests:
+          - not_null
+          - unique
+          - accepted_values:
+              arguments:
+                values: ['85171300', '84713000', '85287200']
+
+  - name: mart_arbitrage_temps
+    description: >
+      Monthly KPIs over fct_arbitrage (Phase 2.22) - monthly grain chosen
+      because daily grain would be almost entirely single-declaration days
+      (338 rows over 270 distinct days, see the model's own header comment).

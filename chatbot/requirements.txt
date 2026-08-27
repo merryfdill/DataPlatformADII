@@ -1,0 +1,4 @@
+fastapi>=0.115,<0.116
+uvicorn[standard]>=0.32,<0.33
+google-genai>=1.0
+trino>=0.331,<0.332

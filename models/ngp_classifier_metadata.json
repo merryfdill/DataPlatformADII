@@ -1,0 +1,71 @@
+{
+  "model": "LogisticRegression",
+  "classes": [
+    "84713000",
+    "85171300",
+    "85287200"
+  ],
+  "random_state": 42,
+  "features": {
+    "text": "texte_produit",
+    "numeric": [
+      "prix",
+      "ram_num",
+      "stockage_num",
+      "taille_ecran_num"
+    ],
+    "categorical": [
+      "marque",
+      "devise",
+      "type_prix",
+      "reseau",
+      "processeur"
+    ],
+    "excluded": [
+      "categorie",
+      "camera",
+      "batterie",
+      "CODE_NGP",
+      "url",
+      "date_scraping",
+      "site_source"
+    ]
+  },
+  "trained_at": "2026-08-14T15:05:15.024294+00:00",
+  "dataset": "data/ml_dataset_features.csv",
+  "dataset_rows": 73,
+  "train_rows": 58,
+  "test_rows": 15,
+  "test_metrics": {
+    "accuracy": 1.0,
+    "precision_macro": 1.0,
+    "recall_macro": 1.0,
+    "f1_macro": 1.0
+  },
+  "all_models_test_metrics": {
+    "LogisticRegression": {
+      "accuracy": 1.0,
+      "precision_macro": 1.0,
+      "recall_macro": 1.0,
+      "f1_macro": 1.0
+    },
+    "LinearSVM": {
+      "accuracy": 1.0,
+      "precision_macro": 1.0,
+      "recall_macro": 1.0,
+      "f1_macro": 1.0
+    },
+    "RandomForest": {
+      "accuracy": 1.0,
+      "precision_macro": 1.0,
+      "recall_macro": 1.0,
+      "f1_macro": 1.0
+    }
+  },
+  "sklearn_version": "1.4.0",
+  "limitations": [
+    "3 classes correspond to the 3 scraped categories (Smartphone/PC Portable/Televiseur) at HS8 granularity - not a 10-digit classification (CKD/SKD, tablette, usage industriel/satellite are structurally absent from this retail-scraping source, see docs/ml_dataset.md).",
+    "Test set has only ~5 examples per class - metrics are high-variance, not a reliable estimate.",
+    "The Tarif douanier does not distinguish NGP by brand; this model must not be used to imply a brand -> NGP relationship."
+  ]
+}
