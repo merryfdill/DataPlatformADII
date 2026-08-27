@@ -33,15 +33,14 @@ BADR + Web Scraping
 `Failed to load table: arbitrage in gold namespace`, alors que
 `SHOW TABLES` liste bien la table.
 
-**Cause** : le catalogue REST Iceberg (service `iceberg-rest`) stocke ses
-métadonnées dans un fichier SQLite **sans aucun volume Docker**
-(`/tmp/iceberg_rest_mode=memory` à l'intérieur du conteneur — voir
-`docker-compose.yml`, service `iceberg-rest`, pas de bloc `volumes:`).
-Ce fichier survit à un simple `docker restart` mais est **perdu à chaque
-recréation du conteneur** (`docker-compose down` puis `up`,
-`--force-recreate`, etc.). Si une écriture Iceberg est interrompue à ce
-moment-là, le catalogue peut garder un pointeur vers un fichier de
-métadonnées qui n'existe plus sur MinIO/S3.
+**Cause** : le catalogue REST Iceberg (service `iceberg-rest`) garde, dans
+son SQLite, un pointeur vers un fichier de métadonnées qui n'existe plus
+sur MinIO/S3 — typiquement après une écriture Iceberg interrompue
+(commit coupé, `SQLITE_BUSY`, conteneur tué en plein `register_gold_iceberg`).
+Le catalogue lui-même **persiste** désormais (volume `iceberg-rest-catalog`
+monté sur `/opt/iceberg-catalog/catalog.db`, `busy_timeout=30000` — voir
+`docker-compose.yml`), donc ce n'est plus une perte totale à chaque
+`down`/`up` ; c'est un pointeur isolé cassé, à réparer table par table.
 
 **Procédure de récupération** (testée et confirmée le 23/08/2026) :
 
@@ -77,7 +76,9 @@ métadonnées qui n'existe plus sur MinIO/S3.
    ```bash
    docker exec dataplatformadii-trino-1 trino --catalog iceberg --schema gold --execute "SELECT count(*) FROM arbitrage"
    ```
-   Doit retourner `338`.
+   Doit retourner le volume du dernier run `adii_arbitrage` (`339` au
+   2026-08-27 ; ce nombre croît avec la population BADR appendée par
+   `adii_daily_ingestion`, il n'est plus figé à l'ancien `338`).
 
 **Si c'est une table dbt** (`fct_arbitrage`, `mart_arbitrage_kpi`, etc.)
 plutôt que la table source `arbitrage` : même étape 1 (adapter le nom),
@@ -86,14 +87,14 @@ puis à l'étape 2 relancer dbt au lieu du spark-submit :
 docker exec dataplatformadii-dbt-1 dbt run --threads 1
 ```
 
-**Cause racine — pas encore corrigée** : `iceberg-rest` n'a aucun volume
-Docker. Son catalogue est perdu à **chaque recréation complète de la
-stack**, pas seulement lors d'un incident isolé — un `docker-compose down`
-puis `up` oblige à tout reconstruire (`register_gold_iceberg.py` + `dbt
-run`) avant que Trino/Grafana/le chatbot ne revoient les données. Piste de
-correction durable (non implémentée) : ajouter un volume nommé sur
-`iceberg-rest`, ou migrer vers un backend de catalogue avec une base
-persistée.
+**Cause racine — corrigée** : `iceberg-rest` a désormais un volume nommé
+(`iceberg-rest-catalog`) et une `CATALOG_URI` explicite sous ce volume, le
+catalogue survit donc à `down`/`up` et `--force-recreate`. Risque résiduel :
+le SQLite reste mono-écrivain (d'où `busy_timeout=30000`) et un pointeur
+peut encore se retrouver orphelin si une écriture Iceberg est coupée en
+plein vol — la procédure ci-dessus reste le remède, table par table.
+Migration vers un backend de catalogue plus robuste (Postgres) : non faite,
+non prioritaire.
 
 ## ⚠️ Dépannage — les tâches Airflow meurent après « Pre Execute » sans erreur
 
