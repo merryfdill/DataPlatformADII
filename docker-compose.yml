@@ -3,6 +3,7 @@ x-airflow-common: &airflow-common
     context: ./airflow
   environment: &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
     # Airflow 3 scrubs AIRFLOW__DATABASE__SQL_ALCHEMY_CONN to
     # "airflow-db-not-allowed:///" inside task subprocesses (tasks must not touch
