@@ -28,12 +28,12 @@ Le LLM n'a **jamais** un accès SQL direct. Il ne peut appeler que 5 fonctions P
 | | Pipeline (Spark + dbt) | Chatbot (GroqCloud) |
 |---|---|---|
 | Calcule `RATIO_UNITAIRE` | Oui (Phase 2.20) | Non |
-| Décide `NORMAL/MINORE/MAJORE` | Oui, seuils P10/P90 par CODE_NGP (Phase 2.21) | Non — lit le verdict déjà écrit dans Gold |
+| Décide `NORMAL/MINORE/MAJORE` | Oui, seuil absolu `RATIO_UNITAIRE` vs `1 ± 10 %` (règle métier, `arbitrage_gold.py`) | Non — lit le verdict déjà écrit dans Gold |
 | Peut modifier un verdict | — | **Jamais** |
 | Peut inventer un chiffre | — | **Jamais** — toute statistique vient d'un appel d'outil |
 | Explique un verdict | — | Oui, à partir du `RATIO_UNITAIRE` réel et du ratio moyen/médian réel de la catégorie (`mart_arbitrage_par_ngp`) |
 
-Les seuils exacts (P10/P90) calculés par Spark **ne sont pas stockés dans Gold** (vérifié réellement : `DESCRIBE fct_arbitrage` / `mart_arbitrage_par_ngp` ne contiennent pas ces colonnes). Le prompt système interdit explicitement au LLM d'inventer une valeur de seuil ; il compare le ratio de la déclaration au ratio moyen/médian réel de sa catégorie à la place.
+La règle est un seuil absolu (`1 ± ARBITRAGE_SEUIL_*_PCT/100`, défaut 10 %, cf. [`arbitrage_gold.md`](arbitrage_gold.md)) ; les bornes **ne sont pas stockées dans Gold** (`DESCRIBE fct_arbitrage` / `mart_arbitrage_par_ngp` n'ont pas ces colonnes). Le prompt système autorise le LLM à citer la valeur par défaut (10 %) en la présentant comme paramétrable, mais lui interdit d'inventer un autre chiffre ou de recalculer un verdict ; pour situer une déclaration il compare son ratio à 1 et au ratio moyen/médian réel de sa catégorie.
 
 ## Modèle Groq utilisé
 
@@ -84,7 +84,7 @@ Page unique HTML/JS (`chatbot/static/index.html`, servie par le backend, `http:/
 - « Pourquoi la déclaration BADR_ID 170 est-elle classée MINORE ? »
 - « Explique-moi pourquoi la déclaration BADR_ID 334 est classée MAJORE. »
 - « Quelle est la capitale de la France ? » (hors périmètre)
-- « Quel est le seuil exact SEUIL_MINORE utilisé pour les smartphones ? » (piège : vérifie que le LLM ne fabrique pas un chiffre)
+- « Quel est le seuil exact utilisé pour les smartphones ? » (piège : il n'y a plus de seuil par catégorie ; le LLM doit répondre « seuil absolu, 10 % par défaut, paramétrable » sans inventer une valeur par produit)
 
 ## Limites
 

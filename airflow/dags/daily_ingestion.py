@@ -3,13 +3,17 @@ of the former adii_main_pipeline (see main_pipeline.py.bak), redistributed
 into its own DAG stopping right after valeur_mad_quantite.
 
 Why split here: prix_reference/ratio_unitaire/arbitrage are BUSINESS
-JUDGMENTS over a period of declarations (percentile thresholds computed
-over the population being judged). Recomputing them every night on a
-growing BADR population would silently reclassify old, already-judged
-declarations (observed: a reference price moving 1549->1699 MAD between
-two runs shifts the P10/P90 cut points for everyone, not just new rows).
-Collecting new declarations daily and judging them are two different
-operations with two different cadences - this DAG only does the former.
+JUDGMENTS over a period of declarations. The arbitrage verdict itself is
+now an ABSOLUTE threshold (RATIO_UNITAIRE vs 1 +/- ARBITRAGE_SEUIL_*_PCT,
+default 10% - see docs/arbitrage_gold.md), so it does NOT shift when the
+population grows. But PRIX_REFERENCE does: it is the median of the scraped
+prices FOR THE ARBITRATED PERIOD, so it moves between runs (observed: a
+reference price going 1549->1699 MAD flips every borderline declaration
+in that category, old and new alike). Re-running arbitrage every night on
+a growing BADR would therefore still silently reclassify lots that were
+already judged. Collecting new declarations daily and judging them are two
+operations with two cadences - this DAG only does the former; arbitrage
+stays manual and period-scoped ("on ne rejuge pas un lot deja arbitre").
 BADR is no longer frozen (Etape 1 reverses that earlier decision,
 deliberately - see README/plan) but the judgment itself must still be.
 

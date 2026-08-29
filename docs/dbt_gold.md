@@ -66,9 +66,9 @@ Un correctif mineur a été nécessaire au lancement (`--conf spark.sql.catalog.
 
 `DATE_DEPOT` couvre ~2 ans (2024-08-21 à 2026-08-10) mais seulement 270 dates distinctes pour 338 lignes — un regroupement journalier donnerait presque exclusivement des jours à une seule déclaration, sans tendance exploitable. Vérifié réellement avant de construire le modèle (pas supposé) : 25 mois distincts, 11 à 25 déclarations/mois — une granularité mensuelle est la plus fine qui reste réellement analysable.
 
-## Seuils d'arbitrage : non retouchés
+## Règle d'arbitrage : non retouchée par dbt
 
-Conformément à la consigne, dbt **n'recalcule pas** les seuils P10/P90 de la Phase 2.21 — `ARBITRAGE` est lu tel quel depuis la source Gold. Aucun seuil n'est redéfini dans dbt.
+dbt **ne recalcule pas** le verdict `ARBITRAGE`. Depuis le 2026-08-28 la règle est un **seuil absolu** (`RATIO_UNITAIRE` vs `1 ± ARBITRAGE_SEUIL_*_PCT`, défaut 10 % — cf. [`docs/arbitrage_gold.md`](arbitrage_gold.md)), calculée par Spark. `ARBITRAGE` est lu tel quel depuis la source Gold ; les `approx_percentile` des marts ne sont que des médianes descriptives, jamais des seuils.
 
 ## Tests
 
@@ -90,6 +90,8 @@ Conformément à la consigne, dbt **n'recalcule pas** les seuils P10/P90 de la P
 
 ## Résultats obtenus (Trino, après `dbt run`)
 
+> ⚠️ Chiffres ci-dessous établis sous l'**ancienne** règle P10/P90 (338 lignes, 270/34/34). Le changement de règle du 2026-08-28 (seuil absolu 10 %) reclasse toutes les déclarations et la population BADR a grandi depuis — voir la nouvelle distribution dans [`docs/arbitrage_gold.md`](arbitrage_gold.md) / le run `adii_arbitrage` le plus récent. La structure des marts et des tests est inchangée.
+
 **KPI globaux** (`mart_arbitrage_kpi`) : 338 déclarations · NORMAL 270 (79,88%) · MINORE 34 (10,06%) · MAJORE 34 (10,06%) · ratio moyen 1,3304 · ratio médian ≈1,033 (`approx_percentile`, voir limite ci-dessous) · valeur totale 44 590 579,73 MAD · quantité totale 18 861
 
 **Par CODE_NGP** (`mart_arbitrage_par_ngp`) :
@@ -104,7 +106,7 @@ Ces chiffres correspondent **exactement** aux totaux/décomptes de la Gold Spark
 
 ## Limites
 
-- `ratio_median` (`mart_arbitrage_kpi`/marts) utilise `approx_percentile` (Trino), un algorithme **approché** — légère différence avec la médiane exacte calculée par Spark en Phase 2.20/2.21 (~1,033 vs 1,045). Documenté ici, pas un défaut de calcul.
+- `ratio_median` (`mart_arbitrage_kpi`/marts) utilise `approx_percentile` (Trino), un algorithme **approché** — légère différence avec la médiane exacte calculée par Spark. Documenté ici, pas un défaut de calcul.
 - Le catalogue Iceberg REST (`iceberg-rest`) utilise un backend SQLite mono-écrivain (limite connue de l'image de référence Tabular) — des écritures concurrentes rapprochées peuvent produire une erreur `ICEBERG_COMMIT_ERROR` transitoire ; observé et résolu dans cette phase par un redémarrage simple du conteneur (aucune perte de données, le catalogue est reconstruit depuis les métadonnées déjà persistées sur S3/MinIO). À surveiller si le pipeline est industrialisé (DAG Airflow futur).
 - `register_gold_iceberg.py` doit être ré-exécuté après chaque rafraîchissement de `arbitrage_gold.py` pour que dbt voie les données à jour (pas encore orchestré automatiquement — tâche pour la phase Airflow).
 - La table Iceberg `iceberg.gold.arbitrage` est un `createOrReplace()` (aucun historique de versions Iceberg conservé au-delà de l'écriture courante).

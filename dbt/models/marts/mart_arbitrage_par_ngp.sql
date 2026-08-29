@@ -1,7 +1,7 @@
--- KPIs by CODE_NGP (Phase 2.22). Aggregation only - the per-category
--- P10/P90 thresholds behind ARBITRAGE were computed once by Spark
--- (spark/jobs/arbitrage_gold.py, Phase 2.21) and are NOT recalculated here;
+-- KPIs by CODE_NGP. Aggregation only - the ARBITRAGE verdict (absolute
+-- threshold rule, spark/jobs/arbitrage_gold.py) is NOT recalculated here;
 -- this mart only summarizes the already-produced ARBITRAGE/RATIO_UNITAIRE.
+-- approx_percentile below is a descriptive median, not a threshold.
 
 select
     CODE_NGP,

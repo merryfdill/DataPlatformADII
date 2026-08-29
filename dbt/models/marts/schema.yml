@@ -4,10 +4,10 @@ models:
   - name: fct_arbitrage
     description: >
       Fact table: one row per BADR declaration analyzed by the Spark
-      arbitrage pipeline (Phases 2.17-2.21). ARBITRAGE/RATIO_UNITAIRE/etc.
-      are Spark's business-computed results, not recomputed by dbt.
-      BADR_ID is verified unique (338/338 distinct, Phase 2.22) - see
-      docs/dbt_gold.md.
+      arbitrage pipeline. ARBITRAGE (absolute threshold rule),
+      RATIO_UNITAIRE etc. are Spark's business-computed results, not
+      recomputed by dbt. The unique test on BADR_ID enforces one row per
+      declaration - see docs/dbt_gold.md.
     columns:
       - name: BADR_ID
         description: BADR declaration identifier - one row per declaration.
@@ -23,8 +23,9 @@ models:
                 values: ['85171300', '84713000', '85287200']
       - name: ARBITRAGE
         description: >
-          Business-rule arbitrage result (Phase 2.21) - ASCII values,
-          documented in docs/arbitrage_gold.md.
+          Business-rule arbitrage result (absolute threshold on
+          RATIO_UNITAIRE) - ASCII values, documented in
+          docs/arbitrage_gold.md.
         tests:
           - not_null
           - accepted_values:

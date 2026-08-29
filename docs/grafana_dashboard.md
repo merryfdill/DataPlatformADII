@@ -1,6 +1,8 @@
 # Dashboard Grafana (Phase 2.23)
 
-Complète [`docs/dbt_gold.md`](dbt_gold.md) (Phase 2.22). Dashboard d'arbitrage douanier construit uniquement sur la Gold analytique dbt déjà validée — aucun recalcul métier.
+Complète [`docs/dbt_gold.md`](dbt_gold.md). Dashboard d'arbitrage douanier construit uniquement sur la Gold analytique dbt — aucun recalcul métier.
+
+> ⚠️ Les décomptes de validation cités plus bas (`338/270/34/34`, répartitions par CODE_NGP, `% MINORE`/`% MAJORE` = 10,06 %) datent de l'ancienne règle P10/P90. Le changement de règle du 2026-08-28 (seuil absolu 10 %) les rend caducs. Les **requêtes** des panels sont inchangées (elles lisent la colonne `ARBITRAGE` et agrègent) ; seuls les nombres attendus changent. Nouvelle référence : voir le run `adii_arbitrage` le plus récent.
 
 ## Infrastructure existante réutilisée (rien recréé)
 

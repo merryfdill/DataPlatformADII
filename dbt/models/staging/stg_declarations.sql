@@ -1,8 +1,8 @@
--- Phase 2.22: thin staging view over the Spark Gold arbitrage source.
--- No business logic recomputed here - VALEUR_MAD, PRIX_REFERENCE,
--- VALEUR_UNITAIRE_MAD, RATIO_UNITAIRE and ARBITRAGE are taken as-is from
--- Spark (Phases 2.17-2.21). This is a 1:1 pass-through per dbt staging
--- convention (a stable naming layer between the raw source and the marts);
+-- Thin staging view over the Spark Gold arbitrage source. No business
+-- logic recomputed here - VALEUR_MAD, PRIX_REFERENCE, VALEUR_UNITAIRE_MAD,
+-- RATIO_UNITAIRE and ARBITRAGE (absolute threshold rule) are taken as-is
+-- from Spark. This is a 1:1 pass-through per dbt staging convention (a
+-- stable naming layer between the raw source and the marts);
 -- NULL/domain/uniqueness checks live in schema.yml, not here.
 
 select

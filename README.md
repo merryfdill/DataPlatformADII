@@ -247,3 +247,58 @@ dédiée (change la structure du DAG pour un gain marginal).
 - monitoring/       Grafana
 - data/             Local temporary data
 - notebooks/        Exploration and ML
+
+## Règle d'arbitrage NORMAL / MINORÉ / MAJORÉ
+
+Seuil **absolu et symétrique** autour du prix de référence, calculé par
+`spark/jobs/arbitrage_gold.py` (règle métier `if/else`, pas d'IA) :
+
+```
+RATIO_UNITAIRE < 1 − SEUIL_MINORE_PCT/100   → MINORÉ
+bande centrale                              → NORMAL
+RATIO_UNITAIRE > 1 + SEUIL_MAJORE_PCT/100   → MAJORÉ
+```
+
+où `RATIO_UNITAIRE = (VALEUR_MAD / QUANTITE) / PRIX_REFERENCE`.
+
+Le seuil est **isolé dans deux variables d'environnement** — par défaut 10 %
+de chaque côté (bande NORMAL `[0,90 ; 1,10]`) :
+
+```
+.env                ARBITRAGE_SEUIL_MINORE_PCT=10
+                    ARBITRAGE_SEUIL_MAJORE_PCT=10
+docker-compose.yml  passées au service spark-iceberg
+```
+
+Changer le seuil = éditer `.env`, `docker compose up -d spark-iceberg`,
+relancer le DAG `adii_arbitrage`. Aucun code, aucune image à reconstruire.
+Les bornes effectives sont loguées au démarrage de la tâche `arbitrage`.
+
+Détail et justification (remplace l'ancienne règle P10/P90) :
+[`docs/arbitrage_gold.md`](docs/arbitrage_gold.md).
+
+### ⚠️ Limite à connaître pour la soutenance — référence non calibrée
+
+Avec la règle absolue ±10 %, la distribution obtenue est **NORMAL 11 % ·
+MINORÉ 45 % · MAJORÉ 43 %** (343 déclarations). Seulement 11 % en NORMAL,
+c'est économiquement surprenant. Ce n'est **pas un défaut de la règle** :
+
+- **Globalement** la référence est à peu près centrée : médiane du ratio
+  **0,976** (≈ 1), 51 % des déclarations sous la référence / 49 % au-dessus.
+  L'hypothèse « prix retail Jumia systématiquement trop haut » n'apparaît
+  pas dans l'agrégat et n'est pas directionnelle.
+- **Par catégorie**, les échelles ne correspondent pas : médianes du ratio
+  à **0,48** (téléviseurs) / **1,27** (smartphones) / **1,48** (PC
+  portables) — loin de 1, dans des sens opposés. BADR (Faker) et les prix
+  Jumia sont générés indépendamment ; les deux biais opposés se compensent
+  à l'agrégat.
+- **Retail vs CIF** : un prix Jumia inclut marge + TVA + transport local,
+  une valeur en douane est un prix CIF plus bas. Réel en production,
+  mais ici secondaire par rapport au décalage d'échelle ci-dessus.
+- **P10/P90 masquait tout ça** en re-centrant sur chaque catégorie à
+  chaque run (toujours 10/80/10). La règle absolue le **révèle**.
+
+Sur données simulées, les proportions démontrent que le mécanisme
+fonctionne, ce ne sont pas des taux de fraude. Sur données réelles,
+`PRIX_REFERENCE` devrait d'abord être calibré sur la valeur en douane
+(par catégorie). Analyse complète : [`docs/arbitrage_gold.md`](docs/arbitrage_gold.md).

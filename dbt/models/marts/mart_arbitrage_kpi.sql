@@ -1,6 +1,7 @@
--- Global KPIs across all analyzed declarations (Phase 2.22).
--- Pure aggregation of fct_arbitrage - ARBITRAGE/RATIO_UNITAIRE are already
--- computed by Spark, nothing is recalculated here.
+-- Global KPIs across all analyzed declarations.
+-- Pure aggregation of fct_arbitrage - the ARBITRAGE verdict (absolute
+-- threshold rule in spark/jobs/arbitrage_gold.py) and RATIO_UNITAIRE are
+-- taken as-is, nothing is recalculated here.
 
 select
     count(*) as nb_declarations,

@@ -181,6 +181,13 @@ services:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       AWS_REGION: ${AWS_REGION}
+      # Business threshold for the NORMAL/MINORE/MAJORE arbitrage rule, read by
+      # spark/jobs/arbitrage_gold.py at run time (docker exec inherits this
+      # container's env). Two vars so the low/high sides can diverge later;
+      # default 10 (%) each -> NORMAL band [0.90, 1.10] around the reference
+      # price. Editing .env + recreating this container is the whole change.
+      ARBITRAGE_SEUIL_MINORE_PCT: ${ARBITRAGE_SEUIL_MINORE_PCT:-10}
+      ARBITRAGE_SEUIL_MAJORE_PCT: ${ARBITRAGE_SEUIL_MAJORE_PCT:-10}
     ports:
       - "8888:8888"
       - "8083:8080"

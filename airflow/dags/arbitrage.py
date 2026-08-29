@@ -3,19 +3,22 @@ the former adii_main_pipeline (see main_pipeline.py.bak), redistributed
 into its own DAG, triggered MANUALLY (schedule=None) over an explicit
 [date_debut, date_fin] period rather than recomputed blindly every night.
 
-Why manual, why a period: prix_reference/ratio_unitaire/arbitrage compute
-percentile thresholds (P10/P90) over the population being judged - see
-spark/jobs/arbitrage_gold.py, UNCHANGED by this split. Running this nightly
-on a growing BADR population would silently reclassify already-judged
-declarations as the population and reference prices shift. A manual,
+Why manual, why a period: the arbitrage verdict is an ABSOLUTE threshold
+(RATIO_UNITAIRE vs 1 +/- ARBITRAGE_SEUIL_*_PCT, default 10% - see
+spark/jobs/arbitrage_gold.py and docs/arbitrage_gold.md), so it no longer
+shifts with the population size. But it still depends on PRIX_REFERENCE,
+which is the median of the scraped prices FOR [date_debut, date_fin] and
+moves from one run to the next. Running this nightly on a growing BADR
+would therefore still reclassify already-judged declarations. A manual,
 period-scoped trigger makes each arbitrage run an explicit, reproducible
 verdict over a defined population - the customs analogy this project has
 used throughout: "la Douane ne rejuge pas une declaration".
 
-date_debut/date_fin default to the full historical BADR range (the 5000
-original declarations, 2024-08-15 -> today) so the FIRST run of this DAG,
-unmodified, reproduces the exact same 338/270/34/34 result validated
-throughout every earlier phase - decision #2 of the approved plan.
+date_debut/date_fin default to the full historical BADR range (2024-08-15
+-> today). NOTE: the 2026-08-28 rule change (P10/P90 -> absolute 10%
+threshold) reclassifies every historical declaration - the old
+338/270/34/34 non-regression baseline is void; a new baseline is
+established from the first run under the new rule.
 
 Reuses the same utils/ package as daily_ingestion.py and the retired
 main_pipeline.py - nothing in utils/ changed for this split.
@@ -192,9 +195,11 @@ with DAG(
         execution_timeout=TIMEOUT_SPARK_JOB,
     )
     def arbitrage(_ratio_result):
-        """Identical to the retired main_pipeline.py's task of the same
-        name - spark/jobs/arbitrage_gold.py is NOT modified by this
-        phase, per explicit instruction. Same P10/P90 business rule.
+        """Runs spark/jobs/arbitrage_gold.py: RATIO_UNITAIRE -> NORMAL/
+        MINORE/MAJORE via the ABSOLUTE threshold rule (2026-08-28, replaces
+        P10/P90). The threshold lives in ARBITRAGE_SEUIL_MINORE_PCT /
+        ARBITRAGE_SEUIL_MAJORE_PCT (spark-iceberg env, default 10%); the
+        job logs the effective bornes at startup. No arg passed here.
         """
         return {"log_tail": run_spark_job("arbitrage_gold.py")[-1000:]}
 

@@ -1,6 +1,6 @@
 -- Fact table: one row per BADR declaration analyzed by the Spark
--- arbitrage pipeline (Phases 2.17-2.21). VALEUR_MAD, PRIX_REFERENCE,
--- VALEUR_UNITAIRE_MAD, RATIO_UNITAIRE and ARBITRAGE are Spark's
+-- arbitrage pipeline. VALEUR_MAD, PRIX_REFERENCE, VALEUR_UNITAIRE_MAD,
+-- RATIO_UNITAIRE and ARBITRAGE (absolute threshold rule) are Spark's
 -- business-computed results, taken as-is - not recomputed here.
 --
 -- The only addition is EST_RECLASSIFIE, a derived flag (CODE_NGP <>

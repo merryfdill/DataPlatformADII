@@ -1,13 +1,12 @@
--- Temporal KPIs (Phase 2.22).
+-- Temporal KPIs.
 --
--- Granularity: MONTH, not day. DATE_DEPOT spans ~2 years (2024-08-21 to
--- 2026-08-10) but fct_arbitrage has only 338 rows over 270 distinct days -
--- a daily grain would be almost entirely single-declaration days (no real
--- trend to show). Grouping by month (25 distinct months, ~11-25
--- declarations/month) is the coarsest grain that still shows a genuine
--- distribution per period - verified against the real data before writing
--- this model, per the instruction not to build a temporal mart the data
--- can't actually support.
+-- Granularity: MONTH, not day. DATE_DEPOT spans ~2 years but fct_arbitrage
+-- has only a few hundred rows over almost as many distinct days - a daily
+-- grain would be almost entirely single-declaration days (no real trend to
+-- show). Grouping by month (~11-25 declarations/month) is the coarsest
+-- grain that still shows a genuine distribution per period - checked
+-- against the real data, per the instruction not to build a temporal mart
+-- the data can't actually support.
 
 select
     date_trunc('month', DATE_DEPOT) as mois,

@@ -1,13 +1,15 @@
-# Arbitrage et couche Gold (Phase 2.21)
+# Arbitrage et couche Gold
 
-Complète [`docs/ratio_unitaire.md`](ratio_unitaire.md) (Phase 2.20). Première couche Gold du projet — résultat métier final, destiné à alimenter ensuite dbt, un dashboard, et un futur chatbot LLM.
+Complète [`docs/ratio_unitaire.md`](ratio_unitaire.md). Première couche Gold du projet — résultat métier final, qui alimente ensuite dbt, le dashboard Grafana et le chatbot.
 
-## Architecture confirmée du projet
+> **Changement de règle (2026-08-28).** La règle P10/P90 par CODE_NGP (prototype des phases 2.20/2.21) est remplacée par un **seuil absolu symétrique** fourni par l'encadrant Douane. Toutes les déclarations historiques sont reclassées — attendu et voulu. L'ancien test de non-régression `338/270/34/34` est caduc.
 
-- **IA 1** (`models/ngp_classifier.joblib`, Phase 2.11) : classification du CODE_NGP des produits scrapés. Rôle achevé et figé — non modifiée dans cette phase.
-- **RATIO_UNITAIRE** : indicateur de comparaison entre la valeur déclarée BADR (ramenée à l'unité) et le prix de référence retail.
-- **Arbitrage NORMAL/MINORE/MAJORE** : **règle métier explicable**, pas une deuxième IA. Aucun Isolation Forest, aucun classifieur d'anomalie, aucun fichier `.joblib` supplémentaire créé.
-- **Futur chatbot LLM** (hors périmètre de cette phase) : interrogera et expliquera les résultats Gold, sans jamais remplacer ce calcul métier ni inventer de résultat.
+## Architecture
+
+- **IA 1** (`models/ngp_classifier.joblib`) : classification du CODE_NGP des produits scrapés. Rôle figé — non concernée par ce changement.
+- **RATIO_UNITAIRE** : rapport entre la valeur déclarée BADR ramenée à l'unité et le prix de référence retail. Voir [`docs/ratio_unitaire.md`](ratio_unitaire.md).
+- **Arbitrage NORMAL/MINORE/MAJORE** : **règle métier explicable**, pas une IA. Aucun Isolation Forest, aucun classifieur d'anomalie, aucun `.joblib`.
+- **Chatbot** : interroge et explique les résultats Gold, ne recalcule jamais le verdict.
 
 ```
 Silver badr_ratio_unitaire  ─┐
@@ -15,109 +17,143 @@ Silver badr_ratio_unitaire  ─┐
 Silver badr (PAYS, CODE_NGP_INITIAL, VALEUR) ─┘
 ```
 
-## Pourquoi le ratio est utilisé
-
-`RATIO_UNITAIRE` compare la valeur déclarée par unité à ce que le marché retail pratique réellement pour ce type de produit (`PRIX_REFERENCE`, Phase 2.14) — un signal de cohérence économique, calculé sans aucune IA.
-
-## Formule
+## Formule du ratio (inchangée)
 
 ```
-VALEUR_UNITAIRE_MAD = VALEUR_MAD / QUANTITE          (Phase 2.20)
-RATIO_UNITAIRE       = VALEUR_UNITAIRE_MAD / PRIX_REFERENCE
+VALEUR_UNITAIRE_MAD = VALEUR_MAD / QUANTITE
+RATIO_UNITAIRE      = VALEUR_UNITAIRE_MAD / PRIX_REFERENCE
 ```
 
-## Pourquoi QUANTITE est nécessaire
+`RATIO_UNITAIRE = 1` → la valeur déclarée par unité est exactement le prix de référence retail de la catégorie. `< 1` → déclaré **sous** la référence. `> 1` → déclaré **au-dessus**.
 
-Sans elle (Phase 2.17/2.18), `VALEUR_MAD` (valeur globale de déclaration) et `PRIX_REFERENCE` (prix unitaire) n'étaient pas comparables — voir le diagnostic Phase 2.18 et sa résolution Phase 2.19/2.20.
-
-## Analyse de la distribution réelle (avant tout choix de seuil)
-
-Percentiles de `RATIO_UNITAIRE`, lus directement dans `s3://datalake/silver/badr_ratio_unitaire/` (338 lignes) :
-
-| | Global (n=338) | Smartphone (n=118) | PC Portable (n=109) | Televiseur (n=111) |
-|---|---|---|---|---|
-| P5 | 0,273 | 0,267 | 0,582 | 0,218 |
-| P10 | 0,400 | 0,467 | 0,629 | 0,276 |
-| P25 | 0,636 | 0,705 | 0,894 | 0,448 |
-| P50 (médiane) | 1,045 | 1,079 | 1,464 | 0,735 |
-| P75 | 1,609 | 1,736 | 2,055 | 1,090 |
-| P90 | 2,440 | 2,772 | 2,819 | 1,552 |
-| P95 | 3,233 | 3,450 | 4,169 | 1,738 |
-| P99 | 6,021 | 6,059 | 5,037 | 3,446 |
-| Moyenne | 1,330 | 1,429 | 1,656 | 0,905 |
-
-**Constat déterminant : les médianes diffèrent nettement par catégorie** (Televiseur 0,74 vs Smartphone 1,08 vs PC Portable 1,46 — écart ×2). **Un seuil global serait trompeur** : appliqué uniformément, il sur-signalerait systématiquement les Televiseur en MINORE et sous-signalerait les PC Portable en MAJORE, pour une raison qui ne reflète qu'une différence structurelle entre catégories, pas une anomalie réelle. **Conclusion : seuils par CODE_NGP, pas de seuil global.**
-
-## Définition des seuils
+## Règle d'arbitrage (seuil absolu)
 
 ```
-RATIO_UNITAIRE < P10(CODE_NGP)              → MINORE
-P10(CODE_NGP) ≤ RATIO_UNITAIRE ≤ P90(CODE_NGP) → NORMAL
-RATIO_UNITAIRE > P90(CODE_NGP)              → MAJORE
+RATIO_UNITAIRE < BORNE_BASSE               → MINORE   (déclaré à plus de X % sous la référence)
+BORNE_BASSE ≤ RATIO_UNITAIRE ≤ BORNE_HAUTE → NORMAL
+RATIO_UNITAIRE > BORNE_HAUTE               → MAJORE   (déclaré à plus de X % au-dessus)
+
+BORNE_BASSE = 1 − ARBITRAGE_SEUIL_MINORE_PCT / 100
+BORNE_HAUTE = 1 + ARBITRAGE_SEUIL_MAJORE_PCT / 100
 ```
 
-**Pourquoi P10/P90 (déciles) plutôt que P25/P75 (quartiles) :** un système de ciblage douanier vise à signaler une **minorité** de déclarations pour contrôle, pas la moitié du trafic (ce que des quartiles feraient par construction — 50% hors de la zone NORMAL). Les déciles ciblent ~10% bas + ~10% haut, une proportion opérationnellement réaliste, tout en restant une règle de percentile simple, transparente et non arbitraire (pas de constante inventée comme "0,8/1,2").
+**Par défaut : 10 % de chaque côté → bande NORMAL `[0,90 ; 1,10]`.**
 
-**Calcul dynamique, pas de constante codée en dur** : les seuils sont recalculés par Spark à chaque exécution à partir des données réelles (`spark/jobs/arbitrage_gold.py`), donc reproductibles et vérifiables — pas des nombres choisis a priori.
+Chaque déclaration est jugée **par rapport à son propre prix de référence**, jamais par rapport aux autres déclarations. Contrairement aux percentiles P10/P90, ce seuil ne se déplace pas quand la population grandit : une déclaration à `ratio = 0,85` est MINORÉ aujourd'hui et le restera, quels que soient les volumes ajoutés ensuite.
 
-### Seuils obtenus (calculés, Phase 2.21)
+### Isolation du seuil
 
-| CODE_NGP | n | SEUIL_MINORE (P10) | SEUIL_MAJORE (P90) | Médiane |
-|---|---|---|---|---|
-| 85171300 (Smartphone) | 118 | 0,4670 | 2,7719 | 1,0794 |
-| 84713000 (PC Portable) | 109 | 0,6291 | 2,8187 | 1,4639 |
-| 85287200 (Televiseur) | 111 | 0,2756 | 1,5518 | 0,7354 |
+`ARBITRAGE_SEUIL_MINORE_PCT` et `ARBITRAGE_SEUIL_MAJORE_PCT` sont, du plus externe au plus interne :
 
-### ⚠️ Ce ne sont PAS des seuils douaniers officiels
-
-**Ces seuils sont des seuils de simulation/prototype**, dérivés statistiquement de `data/badr.db`, qui est un jeu de données **simulé avec Faker** (Phase 1, régénéré Phase 2.19). Aucune source officielle de l'ADII ou de la douane marocaine n'établit ces valeurs. Ils ne doivent **jamais** être présentés comme une règle douanière réelle — uniquement comme une méthode reproductible de démonstration sur données synthétiques.
-
-## Valeurs ASCII de la colonne ARBITRAGE
-
-`NORMAL`, `MINORE`, `MAJORE` — volontairement sans accent (formes adjectivales correctes seraient "MINORÉ"/"MAJORÉ") pour éviter tout problème d'encodage dans Parquet/Trino/dbt en aval. Choix documenté, pas un oubli.
-
-## Différence règle métier vs IA
-
-| | IA 1 (classification NGP) | Arbitrage (cette phase) |
+| Niveau | Fichier | Contenu |
 |---|---|---|
-| Méthode | Modèle scikit-learn entraîné (`ngp_classifier.joblib`) | Règle `if/else` sur percentiles, aucun apprentissage |
-| Reproductibilité | Dépend des poids appris | 100% déterministe à partir des données |
-| Explicabilité | Coefficients/probabilités du modèle | Comparaison directe à un seuil chiffré, lisible par un humain |
-| Nouveau `.joblib` | Oui (Phase 2.11) | **Non — aucun** |
+| Valeur | `.env` (et `.env.example`) | `ARBITRAGE_SEUIL_MINORE_PCT=10` / `ARBITRAGE_SEUIL_MAJORE_PCT=10` |
+| Injection | `docker-compose.yml`, service `spark-iceberg`, bloc `environment:` | `${ARBITRAGE_SEUIL_MINORE_PCT:-10}` / `${ARBITRAGE_SEUIL_MAJORE_PCT:-10}` |
+| Lecture | `spark/jobs/arbitrage_gold.py` | `float(os.environ.get("ARBITRAGE_SEUIL_MINORE_PCT", "10")) / 100` → `BORNE_BASSE = 1 - …` |
 
-Aucun Isolation Forest, aucun second classifieur, aucun score d'anomalie ML n'a été créé dans cette phase, conformément à l'architecture validée.
+**Passer de 10 à 15 %** = éditer une ligne de `.env`, `docker compose up -d spark-iceberg`, relancer `adii_arbitrage`. Aucun code touché, aucune image reconstruite (`spark/jobs/` est bind-mounté).
+
+**Deux variables** même si elles valent 10 aujourd'hui : l'encadrant peut vouloir un seuil de minoration plus strict que celui de majoration (ou l'inverse). Défaut identique des deux côtés.
+
+Les bornes effectives sont **loguées au démarrage du job** (visibles dans le log de la tâche `arbitrage` d'Airflow) :
+
+```
+Regle d'arbitrage appliquee (seuil absolu, isole dans ARBITRAGE_SEUIL_*_PCT) :
+  ARBITRAGE_SEUIL_MINORE_PCT = 10.0 %  ->  borne basse NORMAL = 0.900000
+  ARBITRAGE_SEUIL_MAJORE_PCT = 10.0 %  ->  borne haute NORMAL = 1.100000
+    RATIO_UNITAIRE < 0.900000                    -> MINORE
+    0.900000 <= RATIO_UNITAIRE <= 1.100000 -> NORMAL
+    RATIO_UNITAIRE > 1.100000                    -> MAJORE
+```
+
+### ⚠️ Ce n'est pas un barème douanier officiel de production
+
+Le chiffre de 10 % est la règle énoncée par l'encadrant, mais l'ensemble du pipeline reste une **démonstration sur données simulées** : `data/badr.db` est généré avec Faker et `PRIX_REFERENCE` provient d'un scraping Jumia. Les résultats illustrent une méthode, pas un contrôle douanier réel.
+
+### Pourquoi ce changement (P10/P90 → absolu)
+
+| | P10/P90 par CODE_NGP (ancien) | Seuil absolu ±X % (nouveau) |
+|---|---|---|
+| Référence du jugement | la population elle-même | le prix de référence propre à chaque déclaration |
+| Proportion signalée | toujours ~10 % / ~10 % par construction | varie réellement selon les données |
+| Stabilité dans le temps | le seuil bouge à chaque ajout de déclarations → reclasse des lots déjà jugés | le seuil ne bouge pas |
+| Modifiable | non (recalculé) | oui, une variable d'environnement |
+
+Ré-exécuter `adii_arbitrage` reclasse quand même d'anciens lots — non plus à cause du percentile, mais parce que `PRIX_REFERENCE` (médiane des prix scrapés **de la période**) varie d'un run à l'autre. C'est la raison pour laquelle l'arbitrage reste **manuel et borné par une période** : on ne rejuge pas un lot déjà arbitré.
+
+## Périmètre : déclarations sans prix de référence
+
+Seuls les 3 codes NGP scrapés ont un `PRIX_REFERENCE`. Les ~4 700 déclarations BADR des 31 autres codes n'ont **pas de ratio** → elles sont écartées en amont par `ratio_unitaire.py`, **n'obtiennent aucun verdict** et **restent hors Gold**. Le rapport et les tâches `data_quality_*` les comptent explicitement comme `rows_out_of_scope = population − gold_rows`. Ce changement de règle ne crée pas de verdict « hors périmètre » — statu quo.
 
 ## Couche Gold
 
-`s3://datalake/gold/arbitrage/` (emplacement vérifié vide avant création — pas de structure Gold préexistante en conflit).
+`s3://datalake/gold/arbitrage/`
 
 | Colonne | Source |
 |---|---|
-| BADR_ID, DATE_DEPOT, QUANTITE, DEVISE | `silver/badr_ratio_unitaire/` |
-| CODE_NGP (normalisé) | `silver/badr_ratio_unitaire/` |
-| CODE_NGP_INITIAL, PAYS, VALEUR (brute) | `silver/badr/` (jointure ajoutée dans cette phase — ces colonnes n'étaient pas exposées par `badr_valeur_prep.py`/`ratio_unitaire.py`, aucun de ces deux jobs n'a été modifié) |
+| BADR_ID, DATE_DEPOT, CODE_NGP (normalisé), QUANTITE, DEVISE | `silver/badr_ratio_unitaire/` |
+| CODE_NGP_INITIAL, PAYS, VALEUR (brute) | `silver/badr/` (jointure) |
 | VALEUR_MAD, PRIX_REFERENCE, VALEUR_UNITAIRE_MAD, RATIO_UNITAIRE | `silver/badr_ratio_unitaire/` |
-| ARBITRAGE | calculé dans cette phase |
+| ARBITRAGE | calculé par `arbitrage_gold.py` (règle absolue ci-dessus) |
 
-## Validations (réelles, exécutées)
+Le schéma Gold est **inchangé** : aucune colonne de seuil n'y est ni n'y était stockée.
 
-- 338 lignes en entrée → 338 en sortie (**0 perdue**)
+## Validations exécutées par le job
+
+- Lignes en entrée = lignes en sortie (0 perdue)
 - 0 NULL sur toutes les colonnes importantes
-- Aucun CODE_NGP hors `{85171300, 84713000, 85287200}` (vérifié, aucune invention)
-- `MINORE` médiane (0,2706) < `NORMAL` médiane (1,0450) < `MAJORE` médiane (3,2981) — cohérence confirmée
-- 5 vérifications manuelles de l'assignation ARBITRAGE, toutes exactes
-- Gold relu après écriture (338 lignes confirmées), puis relu une seconde fois indépendamment via pandas
-- Sources amont recomptées après le job : `badr_ratio_unitaire` toujours 338, Silver BADR toujours 5000 — aucune n'a été modifiée
+- Aucun CODE_NGP hors `{85171300, 84713000, 85287200}`
+- **Exactitude de la règle** : `max(RATIO_UNITAIRE)` des MINORÉ `< BORNE_BASSE`, `min` des MAJORÉ `> BORNE_HAUTE`, NORMAL entièrement dans `[BORNE_BASSE, BORNE_HAUTE]`
+- Cohérence des médianes : `MINORE < NORMAL < MAJORE`
+- Vérification manuelle de 5 lignes (ratio comparé aux bornes)
+- Gold relu après écriture, puis sources amont recomptées (aucune modifiée)
 
-## Distribution obtenue
+## Règle métier vs IA
 
-**Globale :** NORMAL 270 (79,9%) · MINORE 34 (10,1%) · MAJORE 34 (10,1%)
+| | IA 1 (classification NGP) | Arbitrage |
+|---|---|---|
+| Méthode | Modèle scikit-learn entraîné | Règle `if/else` sur 2 constantes |
+| Reproductibilité | Dépend des poids appris | 100 % déterministe |
+| Explicabilité | Coefficients/probabilités | Comparaison directe à un seuil chiffré, lisible |
+| Nouveau `.joblib` | Oui | **Non — aucun** |
 
-**Par CODE_NGP :** répartition quasi identique dans les 3 catégories (~10%/80%/10%), par construction du seuil décile par catégorie.
+## Valeurs ASCII de la colonne ARBITRAGE
+
+`NORMAL`, `MINORE`, `MAJORE` — sans accent (formes correctes : « MINORÉ »/« MAJORÉ ») pour éviter tout problème d'encodage dans Parquet/Trino/dbt. Choix documenté.
 
 ## Limites
 
-- BADR est simulé (Faker) — les seuils n'ont aucune valeur probante réelle, uniquement démonstrative/méthodologique.
-- 338/5000 déclarations BADR (6,76%) couvertes — seules celles avec un `CODE_NGP` normalisé dans le périmètre scrapé.
-- Les seuils sont recalculés dynamiquement à chaque exécution à partir de l'échantillon courant (338 lignes) — pas encore figés dans une table de référence stable ; à surveiller si le volume de données évolue significativement.
-- Le rôle futur du chatbot LLM (phase ultérieure) sera d'interroger et d'expliquer ces résultats Gold en langage naturel, jamais de recalculer ou de remplacer cette règle métier ni d'inventer un résultat non présent dans Gold.
+- BADR simulé (Faker), `PRIX_REFERENCE` issu du scraping — valeur démonstrative, pas probante.
+- Couverture ≈ 3 codes NGP sur 34 ; le reste hors Gold.
+- Le résultat d'un run dépend de `PRIX_REFERENCE`, qui dépend des prix scrapés de la période arbitrée — deux runs sur des périodes différentes ne sont pas directement comparables.
+
+## ⚠️ Limite majeure — la référence n'est pas calibrée sur la valeur en douane
+
+**Distribution obtenue avec la règle absolue ±10 % (run du 2026-08-29, 343 déclarations, seuil par défaut) :**
+
+| | n | % | médiane ratio | moyenne ratio |
+|---|---:|---:|---:|---:|
+| **MINORÉ** | 156 | 45,5 % | — | — |
+| **NORMAL** | 38 | **11,1 %** | — | — |
+| **MAJORÉ** | 149 | 43,4 % | — | — |
+| Global | 343 | | **0,976** (−2,4 % / 1) | **1,320** (+32 % / 1) |
+
+Seules **11 %** des déclarations tombent dans la bande NORMAL, et **43 %** sont MAJORÉ (déclarées au-dessus du prix de référence) — économiquement contre-intuitif. Analyse :
+
+**1. Globalement la référence est à peu près centrée.** Médiane du ratio = 0,976 (quasi 1) ; 50,7 % des déclarations sous la référence, 49,3 % au-dessus — presque symétrique. La moyenne (1,320) est tirée par une queue droite longue (max 7,4), les moyennes ne sont pas robustes ici. Donc **l'hypothèse « référence retail systématiquement trop haute » n'est PAS visible dans l'agrégat** et n'est pas directionnelle.
+
+**2. Le vrai problème est par catégorie — les échelles ne correspondent pas :**
+
+| CODE_NGP | `PRIX_REFERENCE` | val. unitaire déclarée médiane | médiane ratio | verdict dominant |
+|---|---:|---:|---:|---|
+| 85171300 (Smartphone) | 1 319 MAD | 1 675 MAD | **1,27** (+27 %) | MAJORÉ 60 % |
+| 84713000 (PC Portable) | 2 899 MAD | 4 293 MAD | **1,48** (+48 %) | MAJORÉ 64 % |
+| 85287200 (Téléviseur) | 3 149 MAD | 1 500 MAD | **0,48** (−52 %) | MINORÉ 82 % |
+
+Les médianes par catégorie sont à **0,48 / 1,27 / 1,48** — loin de 1, et **dans des directions opposées**. BADR (Faker) et les prix Jumia sont générés indépendamment : rien ne garantit que la valeur unitaire tirée pour un téléviseur soit proche du prix Jumia d'un téléviseur. Le « 43 % MAJORÉ » global est presque entièrement porté par smartphones + PC portables (142 des 149) ; le « 45 % MINORÉ » par les téléviseurs (93 des 156). Les deux biais opposés se compensent à l'agrégat, d'où la médiane globale trompeusement proche de 1.
+
+**3. Retail vs CIF (concern réel pour la production, secondaire ici).** Un prix Jumia = prix CIF + marge distributeur + TVA + transport local. Une valeur en douane est un prix CIF à l'import, structurellement plus bas. Sur données réelles, `PRIX_REFERENCE` devrait subir un ajustement retail→CIF (coefficient, ou table de valeurs douanières de référence) avant qu'une bande ±10 % ait un sens. Mais sur CE jeu de données, cet effet est dominé par le décalage d'échelle Faker/scraping du point 2 — et il n'explique pas pourquoi les PC portables sont à 1,48.
+
+**Pourquoi P10/P90 « marchait » : il ne mesurait rien d'absolu.** En prenant les percentiles *à l'intérieur de chaque catégorie*, il coupait toujours ~10 % de chaque côté, que la catégorie soit centrée sur 0,48 ou sur 1,48. Il produisait une distribution stable (10/80/10) en masquant complètement la non-calibration de la référence. La règle absolue la **révèle** — ce qui est correct sur le plan méthodologique, mais rend les proportions NORMAL/MINORÉ/MAJORÉ **non interprétables comme un taux de fraude** sur ces données synthétiques.
+
+**Conséquence pratique :** la règle est juste et ne change pas. Sur données simulées, les décomptes démontrent que le mécanisme fonctionne, ce ne sont pas des taux réels. Sur données réelles, il faudrait d'abord calibrer `PRIX_REFERENCE` sur la valeur en douane (par catégorie).
