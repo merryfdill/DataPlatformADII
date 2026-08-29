@@ -27,22 +27,52 @@ BADR + Web Scraping
         ↓
      Grafana
 
-## ⚠️ Dépannage — Catalogue Iceberg illisible (`Failed to load table`)
+## ⚠️ Dépannage — `register_gold_iceberg` / lecture Gold Iceberg
 
-**Symptôme** : Trino / dbt / le chatbot renvoient une erreur du type
-`Failed to load table: arbitrage in gold namespace`, alors que
-`SHOW TABLES` liste bien la table.
+Deux pannes distinctes ont existé sur `iceberg.gold.arbitrage`. La première
+est **corrigée**, la seconde est une **limite structurelle du catalogue
+SQLite** avec un contournement simple.
 
-**Cause** : le catalogue REST Iceberg (service `iceberg-rest`) garde, dans
-son SQLite, un pointeur vers un fichier de métadonnées qui n'existe plus
-sur MinIO/S3 — typiquement après une écriture Iceberg interrompue
-(commit coupé, `SQLITE_BUSY`, conteneur tué en plein `register_gold_iceberg`).
-Le catalogue lui-même **persiste** désormais (volume `iceberg-rest-catalog`
-monté sur `/opt/iceberg-catalog/catalog.db`, `busy_timeout=30000` — voir
-`docker-compose.yml`), donc ce n'est plus une perte totale à chaque
-`down`/`up` ; c'est un pointeur isolé cassé, à réparer table par table.
+### Cas 1 — `NotFoundException: Location does not exist` (CORRIGÉ le 2026-08-29)
 
-**Procédure de récupération** (testée et confirmée le 23/08/2026) :
+`arbitrage_gold.py` écrivait son Parquet avec `.write.mode("overwrite")`
+directement dans `s3://datalake/gold/arbitrage/` — qui est la *location* de
+la table Iceberg. `overwrite` supprime le préfixe cible avant d'écrire → à
+**chaque run** il effaçait `data/` + `metadata/` de la table, et le
+catalogue pointait vers un `metadata.json` disparu (reproduit 4 fois).
+**Corrigé** : `arbitrage_gold.py` écrit dans `gold/arbitrage_staging/`,
+`register_gold_iceberg.py` lit de là ; le préfixe de la table n'est plus
+touché que par les commits atomiques d'Iceberg. Les 2 fichiers orphelins
+au root de `gold/arbitrage/` (~50 Ko) sont inertes. Si ça se reproduisait
+pour une autre raison, la procédure de récupération plus bas s'applique.
+
+### Cas 2 — `SQLITE_BUSY` / `ServiceFailureException: 500: Unknown failure` (LIMITE CONNUE)
+
+**Symptôme** : `register_gold_iceberg` (ou une tâche dbt) échoue ; les logs
+d'`iceberg-rest` montrent `org.sqlite.SQLiteException: [SQLITE_BUSY] The
+database file is locked`.
+
+**Cause** : le catalogue est un **SQLite mono-écrivain**
+(`iceberg-rest`, `busy_timeout=30000`). Il tient un run séquentiel normal
+(`arbitrage → register → dbt_run → dbt_test`, un écrivain à la fois), mais
+une connexion peut rester **verrouillée dans le process `iceberg-rest`**
+après un spark-submit tué, un retry en échec, ou une transaction étirée par
+la pression mémoire. `busy_timeout` ne récupère pas d'une connexion coincée
+dans le même process, et il n'y a pas d'auto-guérison.
+
+**Contournement** (30 s, aucune perte — le catalogue est sur volume) :
+```bash
+docker restart dataplatformadii-iceberg-rest-1
+# puis relancer la tâche en echec (UI "Clear", ou re-trigger du DAG)
+```
+
+**Non fait, volontairement** : migration du catalogue vers Postgres (élimine
+le mono-écrivain). Hors périmètre à ce stade — le contournement suffit pour
+la démo, à condition de ne pas empiler les runs ni tuer de spark-submit.
+
+### Procédure de récupération (cas 1, si jamais il récidive)
+
+Testée le 23/08/2026 :
 
 1. Supprimer l'entrée de catalogue cassée directement via l'API REST du
    catalogue — **ne pas** utiliser `DROP TABLE` via Spark/Trino, ça échoue
@@ -76,9 +106,9 @@ monté sur `/opt/iceberg-catalog/catalog.db`, `busy_timeout=30000` — voir
    ```bash
    docker exec dataplatformadii-trino-1 trino --catalog iceberg --schema gold --execute "SELECT count(*) FROM arbitrage"
    ```
-   Doit retourner le volume du dernier run `adii_arbitrage` (`339` au
-   2026-08-27 ; ce nombre croît avec la population BADR appendée par
-   `adii_daily_ingestion`, il n'est plus figé à l'ancien `338`).
+   Doit retourner le volume du dernier run `adii_arbitrage` (~345, 2026-08-29 ;
+   ce nombre bouge à chaque run — la population BADR grandit via
+   `adii_daily_ingestion` et `date_fin` par défaut = aujourd'hui).
 
 **Si c'est une table dbt** (`fct_arbitrage`, `mart_arbitrage_kpi`, etc.)
 plutôt que la table source `arbitrage` : même étape 1 (adapter le nom),
@@ -87,14 +117,11 @@ puis à l'étape 2 relancer dbt au lieu du spark-submit :
 docker exec dataplatformadii-dbt-1 dbt run --threads 1
 ```
 
-**Cause racine — corrigée** : `iceberg-rest` a désormais un volume nommé
-(`iceberg-rest-catalog`) et une `CATALOG_URI` explicite sous ce volume, le
-catalogue survit donc à `down`/`up` et `--force-recreate`. Risque résiduel :
-le SQLite reste mono-écrivain (d'où `busy_timeout=30000`) et un pointeur
-peut encore se retrouver orphelin si une écriture Iceberg est coupée en
-plein vol — la procédure ci-dessus reste le remède, table par table.
-Migration vers un backend de catalogue plus robuste (Postgres) : non faite,
-non prioritaire.
+**Risque résiduel** : le SQLite du catalogue reste mono-écrivain (d'où
+`busy_timeout=30000`). Migration vers un backend Postgres : non faite, non
+prioritaire. La cause principale (le job qui écrasait sa propre table) est
+éliminée — `adii_arbitrage` doit désormais passer `register_gold_iceberg`
+du premier coup, sans `DELETE` manuel.
 
 ## ⚠️ Dépannage — les tâches Airflow meurent après « Pre Execute » sans erreur
 
@@ -279,16 +306,18 @@ Détail et justification (remplace l'ancienne règle P10/P90) :
 
 ### ⚠️ Limite à connaître pour la soutenance — référence non calibrée
 
-Avec la règle absolue ±10 %, la distribution obtenue est **NORMAL 11 % ·
-MINORÉ 45 % · MAJORÉ 43 %** (343 déclarations). Seulement 11 % en NORMAL,
-c'est économiquement surprenant. Ce n'est **pas un défaut de la règle** :
+Avec la règle absolue ±10 %, la distribution obtenue est de l'ordre de
+**NORMAL ~11 % · MINORÉ ~45 % · MAJORÉ ~44 %** (~345 déclarations ; les
+décomptes exacts bougent à chaque run — `PRIX_REFERENCE` est recalculé).
+Seulement ~11 % en NORMAL, c'est économiquement surprenant. Ce n'est **pas
+un défaut de la règle** :
 
 - **Globalement** la référence est à peu près centrée : médiane du ratio
-  **0,976** (≈ 1), 51 % des déclarations sous la référence / 49 % au-dessus.
-  L'hypothèse « prix retail Jumia systématiquement trop haut » n'apparaît
-  pas dans l'agrégat et n'est pas directionnelle.
+  ≈ **0,98** (≈ 1), ~51 % des déclarations sous la référence / ~49 %
+  au-dessus. L'hypothèse « prix retail Jumia systématiquement trop haut »
+  n'apparaît pas dans l'agrégat et n'est pas directionnelle.
 - **Par catégorie**, les échelles ne correspondent pas : médianes du ratio
-  à **0,48** (téléviseurs) / **1,27** (smartphones) / **1,48** (PC
+  à ≈ **0,5** (téléviseurs) / ≈ **1,3** (smartphones) / ≈ **1,5** (PC
   portables) — loin de 1, dans des sens opposés. BADR (Faker) et les prix
   Jumia sont générés indépendamment ; les deux biais opposés se compensent
   à l'agrégat.

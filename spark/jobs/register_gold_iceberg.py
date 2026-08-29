@@ -1,18 +1,24 @@
-"""Register the existing Spark Gold arbitrage output as an Iceberg table
-(Phase 2.22), so Trino/dbt can actually see it.
+"""Register the Spark Gold arbitrage output as an Iceberg table, so
+Trino/dbt/Grafana/chatbot can query it.
 
-Phase 2.21's arbitrage_gold.py wrote s3a://datalake/gold/arbitrage/ as plain
+arbitrage_gold.py writes s3a://datalake/gold/arbitrage_staging/ as plain
 Parquet - fine for Spark-to-Spark reads, but NOT visible to Trino: Trino's
 only configured catalog (infrastructure/trino/catalog/iceberg.properties) is
 an Iceberg REST catalog, which can only see tables it manages via Iceberg
 metadata, not an arbitrary Parquet directory. This script does NOT recompute
-anything - it reads the existing, already-validated Gold Parquet as-is and
-writes it, unchanged, as the Iceberg table iceberg.gold.arbitrage, using the
-Spark Iceberg catalog that is already fully configured in
-spark/conf/spark-defaults.conf (spark.sql.catalog.iceberg -> the same REST
-catalog + MinIO warehouse Trino itself uses). No Docker/infrastructure
-change - this exercises wiring that was already present but never used by
-any earlier phase (every prior Spark job wrote plain Parquet).
+anything - it reads the staging Parquet as-is and writes it, unchanged, as
+the Iceberg table iceberg.gold.arbitrage, using the Spark Iceberg catalog
+already configured in spark/conf/spark-defaults.conf (spark.sql.catalog.iceberg
+-> the same REST catalog + MinIO warehouse Trino uses).
+
+Why a STAGING path and not gold/arbitrage/ directly: the Iceberg table's own
+location IS s3://datalake/gold/arbitrage/. arbitrage_gold.py's
+`.write.mode("overwrite")` deletes its target prefix before writing, so
+pointing it at gold/arbitrage/ wiped the table's data/ + metadata/ on every
+rerun and left this job failing with "NotFoundException: Location does not
+exist" (happened 4x). Keeping arbitrage_gold.py on gold/arbitrage_staging/
+and this job reading from there fixes it - the table's prefix is now only
+ever touched by Iceberg's own atomic commits here.
 
 Run with (same flags as the project's other Spark jobs - still needed to
 read the SOURCE parquet via s3a://; the Iceberg write side uses the
@@ -34,7 +40,7 @@ table's content with the current Parquet content, no accumulation.
 
 from pyspark.sql import SparkSession
 
-GOLD_PARQUET_PATH = "s3a://datalake/gold/arbitrage/"
+GOLD_PARQUET_PATH = "s3a://datalake/gold/arbitrage_staging/"
 ICEBERG_TABLE = "iceberg.gold.arbitrage"
 
 

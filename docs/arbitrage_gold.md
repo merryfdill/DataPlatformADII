@@ -13,9 +13,16 @@ Complète [`docs/ratio_unitaire.md`](ratio_unitaire.md). Première couche Gold d
 
 ```
 Silver badr_ratio_unitaire  ─┐
-                              ├─► Spark (arbitrage_gold.py) ─► Gold (s3://datalake/gold/arbitrage/)
-Silver badr (PAYS, CODE_NGP_INITIAL, VALEUR) ─┘
+                              ├─► arbitrage_gold.py ─► gold/arbitrage_staging/ (Parquet)
+Silver badr (PAYS, CODE_NGP_INITIAL, VALEUR) ─┘         │
+                                                        ▼
+                              register_gold_iceberg.py ─► iceberg.gold.arbitrage (table Iceberg, location gold/arbitrage/)
+                                                        │
+                                                        ▼
+                                                     dbt (fct_arbitrage, marts) ─► Trino ─► Grafana / chatbot
 ```
+
+**Chemin de staging (correctif 2026-08-29).** `arbitrage_gold.py` écrit un Parquet brut dans `gold/arbitrage_staging/`, PAS dans `gold/arbitrage/` qui est la *location* de la table Iceberg. Raison : `.write.mode("overwrite")` supprime le préfixe cible avant d'écrire — pointé sur `gold/arbitrage/` il effaçait `data/` + `metadata/` de la table Iceberg à chaque run, laissant le catalogue vers un `metadata.json` disparu (« NotFoundException: Location does not exist », 4 occurrences). Seul `register_gold_iceberg.py` lit le Parquet de staging ; tout l'aval (dbt, Grafana, chatbot) lit la table Iceberg via Trino.
 
 ## Formule du ratio (inchangée)
 
@@ -87,7 +94,8 @@ Seuls les 3 codes NGP scrapés ont un `PRIX_REFERENCE`. Les ~4 700 déclarations
 
 ## Couche Gold
 
-`s3://datalake/gold/arbitrage/`
+Parquet de staging : `s3://datalake/gold/arbitrage_staging/` (écrit par `arbitrage_gold.py`, lu par `register_gold_iceberg.py`).
+Table Iceberg exposée : `iceberg.gold.arbitrage`, *location* `s3://datalake/gold/arbitrage/` (gérée par Iceberg seul).
 
 | Colonne | Source |
 |---|---|
@@ -129,28 +137,30 @@ Le schéma Gold est **inchangé** : aucune colonne de seuil n'y est ni n'y étai
 
 ## ⚠️ Limite majeure — la référence n'est pas calibrée sur la valeur en douane
 
-**Distribution obtenue avec la règle absolue ±10 % (run du 2026-08-29, 343 déclarations, seuil par défaut) :**
+**Distribution obtenue avec la règle absolue ±10 %** (ordre de grandeur — bouge à chaque run avec `PRIX_REFERENCE` et la population BADR ; deux runs 2026-08-29 : `156/38/149` sur 343, puis `154/38/153` sur 345) :
 
-| | n | % | médiane ratio | moyenne ratio |
-|---|---:|---:|---:|---:|
-| **MINORÉ** | 156 | 45,5 % | — | — |
-| **NORMAL** | 38 | **11,1 %** | — | — |
-| **MAJORÉ** | 149 | 43,4 % | — | — |
-| Global | 343 | | **0,976** (−2,4 % / 1) | **1,320** (+32 % / 1) |
+| | ~n | ~% |
+|---|---:|---:|
+| **MINORÉ** | ~155 | ~45 % |
+| **NORMAL** | ~38 | **~11 %** |
+| **MAJORÉ** | ~150 | ~44 % |
+| Global | ~345 | médiane ratio ≈ **0,98** · moyenne ≈ **1,3** |
 
-Seules **11 %** des déclarations tombent dans la bande NORMAL, et **43 %** sont MAJORÉ (déclarées au-dessus du prix de référence) — économiquement contre-intuitif. Analyse :
+Seules **~11 %** des déclarations tombent dans la bande NORMAL, et **~44 %** sont MAJORÉ (déclarées au-dessus du prix de référence) — économiquement contre-intuitif. Analyse :
 
-**1. Globalement la référence est à peu près centrée.** Médiane du ratio = 0,976 (quasi 1) ; 50,7 % des déclarations sous la référence, 49,3 % au-dessus — presque symétrique. La moyenne (1,320) est tirée par une queue droite longue (max 7,4), les moyennes ne sont pas robustes ici. Donc **l'hypothèse « référence retail systématiquement trop haute » n'est PAS visible dans l'agrégat** et n'est pas directionnelle.
+**1. Globalement la référence est à peu près centrée.** Médiane du ratio ≈ 0,98 (quasi 1) ; ~51 % des déclarations sous la référence, ~49 % au-dessus — presque symétrique. La moyenne (≈ 1,3) est tirée par une queue droite longue (max ~7,4), les moyennes ne sont pas robustes ici. Donc **l'hypothèse « référence retail systématiquement trop haute » n'est PAS visible dans l'agrégat** et n'est pas directionnelle.
 
 **2. Le vrai problème est par catégorie — les échelles ne correspondent pas :**
 
-| CODE_NGP | `PRIX_REFERENCE` | val. unitaire déclarée médiane | médiane ratio | verdict dominant |
+| CODE_NGP | `PRIX_REFERENCE`* | val. unitaire déclarée médiane | médiane ratio | verdict dominant |
 |---|---:|---:|---:|---|
-| 85171300 (Smartphone) | 1 319 MAD | 1 675 MAD | **1,27** (+27 %) | MAJORÉ 60 % |
-| 84713000 (PC Portable) | 2 899 MAD | 4 293 MAD | **1,48** (+48 %) | MAJORÉ 64 % |
-| 85287200 (Téléviseur) | 3 149 MAD | 1 500 MAD | **0,48** (−52 %) | MINORÉ 82 % |
+| 85171300 (Smartphone) | ~1 319 MAD | ~1 690 MAD | **≈ 1,29** (+29 %) | MAJORÉ ~59 % |
+| 84713000 (PC Portable) | ~2 800 MAD | ~4 250 MAD | **≈ 1,52** (+52 %) | MAJORÉ ~65 % |
+| 85287200 (Téléviseur) | ~3 000 MAD | ~1 520 MAD | **≈ 0,50** (−50 %) | MINORÉ ~81 % |
 
-Les médianes par catégorie sont à **0,48 / 1,27 / 1,48** — loin de 1, et **dans des directions opposées**. BADR (Faker) et les prix Jumia sont générés indépendamment : rien ne garantit que la valeur unitaire tirée pour un téléviseur soit proche du prix Jumia d'un téléviseur. Le « 43 % MAJORÉ » global est presque entièrement porté par smartphones + PC portables (142 des 149) ; le « 45 % MINORÉ » par les téléviseurs (93 des 156). Les deux biais opposés se compensent à l'agrégat, d'où la médiane globale trompeusement proche de 1.
+\* `PRIX_REFERENCE` = médiane des prix Jumia scrapés, recalculée à chaque run — d'où le fait que les décomptes exacts changent.
+
+Les médianes par catégorie sont **loin de 1 et dans des directions opposées** (~0,5 pour les TV, ~1,5 pour les PC portables). BADR (Faker) et les prix Jumia sont générés indépendamment : rien ne garantit que la valeur unitaire tirée pour un téléviseur soit proche du prix Jumia d'un téléviseur. Le gros du « MAJORÉ » global est porté par smartphones + PC portables ; le gros du « MINORÉ » par les téléviseurs. Les deux biais opposés se compensent à l'agrégat, d'où la médiane globale trompeusement proche de 1.
 
 **3. Retail vs CIF (concern réel pour la production, secondaire ici).** Un prix Jumia = prix CIF + marge distributeur + TVA + transport local. Une valeur en douane est un prix CIF à l'import, structurellement plus bas. Sur données réelles, `PRIX_REFERENCE` devrait subir un ajustement retail→CIF (coefficient, ou table de valeurs douanières de référence) avant qu'une bande ±10 % ait un sens. Mais sur CE jeu de données, cet effet est dominé par le décalage d'échelle Faker/scraping du point 2 — et il n'explique pas pourquoi les PC portables sont à 1,48.
 

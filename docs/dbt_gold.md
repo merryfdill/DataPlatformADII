@@ -11,9 +11,9 @@ BADR + SCRAPING → BRONZE → SILVER → IA 1 (NGP) → PRIX_REFERENCE
                                                           ↓
                                           Regle metier ARBITRAGE (Phase 2.21)
                                                           ↓
-                                    GOLD Spark (Parquet, s3://datalake/gold/arbitrage/)
+                                    arbitrage_gold.py : Parquet → s3://datalake/gold/arbitrage_staging/
                                                           ↓
-                        register_gold_iceberg.py : Parquet → table Iceberg (Phase 2.22)
+                        register_gold_iceberg.py : staging Parquet → table Iceberg iceberg.gold.arbitrage
                                                           ↓
                               DBT (Trino) : sources → staging → fct → marts
                                                           ↓
@@ -40,15 +40,15 @@ BADR + SCRAPING → BRONZE → SILVER → IA 1 (NGP) → PRIX_REFERENCE
 
 ## Pourquoi une étape technique supplémentaire était nécessaire
 
-Le catalogue Trino `iceberg` est un **REST catalog Iceberg strict** : il ne voit que les tables qu'il gère lui-même via métadonnées Iceberg, pas un dossier Parquet brut arbitraire. Or `s3://datalake/gold/arbitrage/` (Phase 2.21) a été écrit en Parquet brut par Spark — invisible pour Trino/dbt tel quel.
+Le catalogue Trino `iceberg` est un **REST catalog Iceberg strict** : il ne voit que les tables qu'il gère lui-même via métadonnées Iceberg, pas un dossier Parquet brut arbitraire. Or `arbitrage_gold.py` écrit un Parquet brut (dans `s3://datalake/gold/arbitrage_staging/`) — invisible pour Trino/dbt tel quel.
 
-**`spark/jobs/register_gold_iceberg.py`** (nouveau, Phase 2.22) résout cela : il relit le Parquet Gold **déjà calculé et déjà validé** (aucune recomputation, aucun changement de valeur) et l'écrit tel quel comme table Iceberg `iceberg.gold.arbitrage`, via le catalogue Iceberg déjà configuré côté Spark. C'est une étape de **branchement technique**, pas une étape métier.
+**`spark/jobs/register_gold_iceberg.py`** résout cela : il relit ce Parquet de staging **déjà calculé et validé** (aucune recomputation) et l'écrit tel quel comme table Iceberg `iceberg.gold.arbitrage`, via le catalogue Iceberg déjà configuré côté Spark. Étape de **branchement technique**, pas métier. Le staging est séparé de la *location* de la table Iceberg (`s3://datalake/gold/arbitrage/`) : sinon le `.write.mode("overwrite")` d'`arbitrage_gold.py` effacerait le `data/`+`metadata/` de la table à chaque run (correctif 2026-08-29, cf. [`docs/arbitrage_gold.md`](arbitrage_gold.md)).
 
 Un correctif mineur a été nécessaire au lancement (`--conf spark.sql.catalog.iceberg.s3.path-style-access=true`, passé en ligne de commande, aucun fichier image modifié) : le client S3 d'Iceberg utilisait par défaut l'adressage virtual-hosted-style (`datalake.minio`, non résolvable) au lieu du path-style déjà utilisé pour les lectures S3A classiques.
 
 ## Sources DBT
 
-`dbt/models/sources.yml` : source unique `gold.arbitrage` → `iceberg.gold.arbitrage` (338 lignes, schéma vérifié réellement — voir [`docs/arbitrage_gold.md`](arbitrage_gold.md) pour le détail des colonnes). Aucune donnée dupliquée : dbt interroge directement cette table via Trino, sans copie physique supplémentaire.
+`dbt/models/sources.yml` : source unique `gold.arbitrage` → `iceberg.gold.arbitrage` (voir [`docs/arbitrage_gold.md`](arbitrage_gold.md) pour le détail des colonnes). Aucune donnée dupliquée : dbt interroge directement cette table via Trino, sans copie physique supplémentaire.
 
 ## Modèles créés
 

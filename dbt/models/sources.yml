@@ -3,15 +3,15 @@ version: 2
 sources:
   - name: gold
     description: >
-      Spark-computed Gold layer (Phases 2.17-2.21): BADR declarations
-      enriched with the ML-predicted CODE_NGP (IA 1), price reference
-      (scraping), unit valuation and the NORMAL/MINORE/MAJORE business-rule
-      arbitrage. Registered as an Iceberg table by
-      spark/jobs/register_gold_iceberg.py (Phase 2.22), which reads the
-      already-computed s3://datalake/gold/arbitrage/ Parquet as-is and
-      writes it unchanged - the values themselves are never recomputed by
-      dbt, only made queryable via Trino. See docs/arbitrage_gold.md and
-      docs/dbt_gold.md.
+      Spark-computed Gold layer: BADR declarations enriched with the
+      ML-predicted CODE_NGP (IA 1), price reference (scraping), unit
+      valuation and the NORMAL/MINORE/MAJORE business-rule arbitrage.
+      Registered as an Iceberg table by
+      spark/jobs/register_gold_iceberg.py, which reads the staging Parquet
+      (s3://datalake/gold/arbitrage_staging/, produced by arbitrage_gold.py)
+      as-is and writes it unchanged as iceberg.gold.arbitrage - the values
+      themselves are never recomputed by dbt, only made queryable via Trino.
+      See docs/arbitrage_gold.md and docs/dbt_gold.md.
     database: iceberg
     schema: gold
     tables:
@@ -20,8 +20,9 @@ sources:
           One row per BADR declaration whose normalized CODE_NGP falls
           within the 3 scraped categories (Smartphone 85171300, PC Portable
           84713000, Televiseur 85287200) and has a valid PRIX_REFERENCE -
-          see docs/arbitrage_gold.md for the full filtering logic (338 of
-          5000 BADR declarations).
+          see docs/arbitrage_gold.md for the full filtering logic (a few
+          hundred of the several thousand BADR declarations; the rest have
+          no reference price and stay out of Gold).
         columns:
           - name: BADR_ID
             description: BADR declaration identifier (Silver BADR `id`).
@@ -49,6 +50,7 @@ sources:
             description: VALEUR_UNITAIRE_MAD / PRIX_REFERENCE (Phase 2.20).
           - name: ARBITRAGE
             description: >
-              NORMAL/MINORE/MAJORE - a transparent per-CODE_NGP percentile
-              business rule (Phase 2.21), not a second ML model. Values are
-              ASCII (no accents), documented in docs/arbitrage_gold.md.
+              NORMAL/MINORE/MAJORE - an absolute symmetric threshold on
+              RATIO_UNITAIRE (1 +/- ARBITRAGE_SEUIL_*_PCT/100, default 10%),
+              not a second ML model. Values are ASCII (no accents),
+              documented in docs/arbitrage_gold.md.

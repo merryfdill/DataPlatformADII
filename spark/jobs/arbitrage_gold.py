@@ -58,8 +58,20 @@ Run with (same flags as the project's other Spark jobs):
         --conf spark.hadoop.fs.s3a.aws.credentials.provider=org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider \
         /home/iceberg/jobs/arbitrage_gold.py
 
-Idempotence: `.mode("overwrite")` on a fixed path, coalesced to 1 file - a
-rerun replaces the previous Gold output.
+Output: plain Parquet at s3a://datalake/gold/arbitrage_staging/ - a STAGING
+path, NOT the Iceberg table's own location. register_gold_iceberg.py reads
+this staging Parquet and registers it as the Iceberg table
+iceberg.gold.arbitrage (whose data/metadata live under
+s3://datalake/gold/arbitrage/). Writing plain Parquet with
+`.mode("overwrite")` DELETES the target prefix first; if that prefix were
+the Iceberg table's location, every rerun would wipe its data/ + metadata/
+and leave the catalog pointing at a deleted metadata.json (observed 4x:
+"NotFoundException: Location does not exist"). The staging path keeps the
+two apart - nothing else reads the staging Parquet (dbt/Grafana/chatbot all
+read the Iceberg table via Trino).
+
+Idempotence: `.mode("overwrite")` on the fixed staging path, coalesced to 1
+file - a rerun replaces the previous staging output.
 """
 
 import os
@@ -69,7 +81,7 @@ from pyspark.sql import functions as F
 
 BADR_RATIO_UNITAIRE_PATH = "s3a://datalake/silver/badr_ratio_unitaire/"
 SILVER_BADR_PATH = "s3a://datalake/silver/badr/"
-GOLD_ARBITRAGE_PATH = "s3a://datalake/gold/arbitrage/"
+GOLD_ARBITRAGE_PATH = "s3a://datalake/gold/arbitrage_staging/"
 
 EXPECTED_CODES = {"85171300", "84713000", "85287200"}
 
